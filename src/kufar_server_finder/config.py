@@ -70,6 +70,7 @@ class GeminiConfig:
 class KufarConfig:
     region: str = "7"
     category_computers: str = "16020"
+    category_laptops: str = "16040"
     page_size: int = 43
     request_timeout: float = 20.0
     page_delay: float = 1.0

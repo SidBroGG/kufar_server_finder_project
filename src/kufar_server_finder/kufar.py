@@ -49,73 +49,101 @@ class KufarClient:
         max_price: float = 100.0,
         load_descriptions: bool = True,
     ) -> list[dict[str, Any]]:
-        params = self._build_search_params(query, computers_only)
+        categories: list[str | None]
+
+        if computers_only:
+            categories = [
+                self.config.category_computers,
+                self.config.category_laptops,
+            ]
+        else:
+            categories = [None]
+
         results: list[dict[str, Any]] = []
-        page_number = 1
+        seen_links: set[str] = set()
 
-        logger.info(
-            "Запуск парсера: query=%r, computers_only=%s, max_price=%s BYN",
-            query,
-            computers_only,
-            max_price,
-        )
+        for category in categories:
+            params = self._build_search_params(query, category)
+            page_number = 1
 
-        while True:
-            logger.info("Загрузка страницы поиска #%s", page_number)
-            if self.config.page_delay:
-                time.sleep(self.config.page_delay)
+            logger.info(
+                "Запуск парсера: query=%r, category=%r, max_price=%s BYN",
+                query,
+                category,
+                max_price,
+            )
 
-            data = self._get_json(self.SEARCH_URL, params=params)
-            ads = data.get("ads") or []
-            if not ads:
-                logger.info("Объявления закончились или не найдены")
-                break
+            while True:
+                logger.info(
+                    "Загрузка категории %r, страница #%s",
+                    category,
+                    page_number,
+                )
 
-            should_stop = False
-            for raw_ad in ads:
-                parsed = self._parse_ad(raw_ad, load_descriptions=load_descriptions)
-                if parsed is None:
-                    continue
+                if self.config.page_delay:
+                    time.sleep(self.config.page_delay)
 
-                if parsed["price"] > max_price:
-                    logger.info(
-                        "Остановка: %r стоит %.2f BYN и превышает лимит",
-                        parsed["title"],
-                        parsed["price"],
-                    )
-                    should_stop = True
+                data = self._get_json(self.SEARCH_URL, params=params)
+                ads = data.get("ads") or []
+
+                if not ads:
                     break
 
-                results.append(parsed)
+                should_stop = False
 
-            if should_stop:
-                break
+                for raw_ad in ads:
+                    parsed = self._parse_ad(
+                        raw_ad,
+                        load_descriptions=load_descriptions,
+                    )
+                    if parsed is None:
+                        continue
 
-            cursor = self._extract_next_cursor(data)
-            if not cursor:
-                logger.info("Следующая страница не найдена")
-                break
+                    if parsed["price"] > max_price:
+                        should_stop = True
+                        break
 
-            params["cursor"] = cursor
-            page_number += 1
+                    link = parsed["link"]
+                    if link in seen_links:
+                        continue
+
+                    seen_links.add(link)
+                    results.append(parsed)
+
+                if should_stop:
+                    break
+
+                cursor = self._extract_next_cursor(data)
+                if not cursor:
+                    break
+
+                params["cursor"] = cursor
+                page_number += 1
+
+        results.sort(key=lambda ad: ad["price"])
 
         logger.info("Собрано объявлений: %s", len(results))
         return results
 
     def _build_search_params(
-        self, query: str | None, computers_only: bool
-    ) -> dict[str, str]:
-        params = {
-            "rgn": self.config.region,
-            "sort": "prc.a",
-            "size": str(self.config.page_size),
-            "lang": "ru",
-        }
-        if query:
-            params["query"] = query
-        if computers_only:
-            params["cat"] = self.config.category_computers
-        return params
+            self,
+            query: str | None,
+            category: str | None,
+        ) -> dict[str, str]:
+            params = {
+                "rgn": self.config.region,
+                "sort": "prc.a",
+                "size": str(self.config.page_size),
+                "lang": "ru",
+            }
+
+            if query:
+                params["query"] = query
+
+            if category:
+                params["cat"] = category
+
+            return params
 
     def _parse_ad(
         self, raw_ad: dict[str, Any], *, load_descriptions: bool
