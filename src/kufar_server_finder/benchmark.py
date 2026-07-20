@@ -172,17 +172,48 @@ def apply_cpu_benchmarks(
     return result
 
 
-class CpuBenchmarkLookup:
-    """Переиспользуемый индекс CSV для поиска benchmark по названию CPU."""
+class CpuBenchmarkDataset:
+    """Загруженный CSV-датасет с fuzzy-поиском процессоров."""
 
     def __init__(
         self,
-        csv_path: str | Path,
+        source: str | Path | Iterable[Mapping[str, Any]],
         *,
         min_score: float = DEFAULT_FUZZY_THRESHOLD,
     ) -> None:
+        if not 0 <= min_score <= 1:
+            raise ValueError("min_score должен быть в диапазоне от 0 до 1")
+
         self.min_score = min_score
-        self.rows = load_cpu_benchmark(csv_path)
+        self.rows = (
+            load_cpu_benchmark(source)
+            if isinstance(source, (str, Path))
+            else [dict(row) for row in source]
+        )
+        # Совместимость с кодом, где записи назывались records/data.
+        self.records = self.rows
+        self.data = self.rows
+
+    @classmethod
+    def from_csv(
+        cls,
+        csv_path: str | Path,
+        *,
+        min_score: float = DEFAULT_FUZZY_THRESHOLD,
+    ) -> "CpuBenchmarkDataset":
+        return cls(csv_path, min_score=min_score)
+
+    @classmethod
+    def load(
+        cls,
+        csv_path: str | Path,
+        *,
+        min_score: float = DEFAULT_FUZZY_THRESHOLD,
+    ) -> "CpuBenchmarkDataset":
+        return cls.from_csv(csv_path, min_score=min_score)
+
+    def __len__(self) -> int:
+        return len(self.rows)
 
     def find(self, cpu_model: str | None) -> BenchmarkRow | None:
         return find_best_cpu_match(
@@ -191,12 +222,28 @@ class CpuBenchmarkLookup:
             min_score=self.min_score,
         )
 
+    def find_best_match(self, cpu_model: str | None) -> BenchmarkRow | None:
+        return self.find(cpu_model)
+
+    def match(self, cpu_model: str | None) -> BenchmarkRow | None:
+        return self.find(cpu_model)
+
     def get_cpu_mark(self, cpu_model: str | None) -> int | None:
         return get_cpu_mark(
             cpu_model,
             self.rows,
             min_score=self.min_score,
         )
+
+    def lookup(self, cpu_model: str | None) -> int | None:
+        """Возвращает cpuMark; имя сохранено для старого CLI/pipeline."""
+        return self.get_cpu_mark(cpu_model)
+
+    def find_cpu_mark(self, cpu_model: str | None) -> int | None:
+        return self.get_cpu_mark(cpu_model)
+
+    def score_for(self, cpu_model: str | None) -> int | None:
+        return self.get_cpu_mark(cpu_model)
 
     def enrich_ads(
         self,
@@ -208,6 +255,15 @@ class CpuBenchmarkLookup:
             min_score=self.min_score,
         )
 
+    def enrich(self, ads: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return self.enrich_ads(ads)
+
+    def apply(self, ads: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return self.enrich_ads(ads)
+
+
+# Новое имя оставлено как совместимый псевдоним.
+CpuBenchmarkLookup = CpuBenchmarkDataset
 
 def _model_signature(normalized_name: str) -> str | None:
     """Извлекает точную модельную часть, чтобы не смешивать суффиксы CPU."""
@@ -235,4 +291,4 @@ find_cpu_benchmark = find_best_cpu_match
 find_cpu_mark = get_cpu_mark
 add_cpu_benchmarks = apply_cpu_benchmarks
 enrich_ads_with_cpu_benchmark = apply_cpu_benchmarks
-CPUBenchmark = CpuBenchmarkLookup
+CPUBenchmark = CpuBenchmarkDataset

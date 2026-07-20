@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from kufar_server_finder.benchmark import (
+    CpuBenchmarkDataset,
     apply_cpu_benchmarks,
     find_best_cpu_match,
     get_cpu_mark,
@@ -64,3 +65,15 @@ def test_apply_cpu_benchmarks_does_not_mutate_source(tmp_path):
 
     assert result[0]["cpuMark"] == 714
     assert "cpuMark" not in source[0]
+
+
+def test_cpu_benchmark_dataset_compatibility(tmp_path):
+    csv_path = tmp_path / "cpu.csv"
+    _write_csv(csv_path)
+
+    dataset = CpuBenchmarkDataset.from_csv(csv_path)
+
+    assert dataset.lookup("Intel Core 2 Duo E6420") == 714
+    assert dataset.get_cpu_mark("Intel Core i5-3470T") == 2958
+    assert dataset.find("Intel Core i5-3470S")["cpuMark"] == "4177"
+    assert dataset.enrich_ads([{"cpu_model": "Intel Core 2 Duo E6420"}])[0]["cpuMark"] == 714
