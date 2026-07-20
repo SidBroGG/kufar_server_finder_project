@@ -114,6 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ads = _collect(args)
             save_ads(args.raw_output, ads)
             result = _analyze(ads, extract_specs=args.extract_specs)
+            result = _vision(result)
             result = _apply_benchmark(result, args.dataset)
             save_ads(args.output, result)
             logger.info("Сырые данные: %s; итог: %s", args.raw_output, args.output)
