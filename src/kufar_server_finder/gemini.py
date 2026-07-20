@@ -323,6 +323,7 @@ class GeminiAnalyzer:
             field
             for field in (
                 "cpu_model",
+                "cpu_socket",
                 "ram_type",
                 "ram_gb",
                 "product_type",

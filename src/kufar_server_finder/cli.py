@@ -54,7 +54,9 @@ def _add_extract_specs_argument(parser: argparse.ArgumentParser) -> None:
         "--infer-specs",
         dest="extract_specs",
         action="store_true",
-        help="Извлечь только явно написанные CPU и ОЗУ, без догадок",
+        help=(
+            "Извлечь явно написанные CPU/ОЗУ и определить сокет по тексту или CPU"
+        ),
     )
 
 

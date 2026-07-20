@@ -4,6 +4,7 @@ import logging
 from typing import Any, Protocol
 
 from .models import AdAnalysis, PCComponentSpec, VisionComponentSpec
+from .socket_inference import infer_socket_from_cpu
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class AdPipeline:
 
         if extract_specs and filtered:
             self._merge_explicit_specs(filtered)
+        self._infer_sockets_from_cpu_models(filtered)
 
         logger.info(
             "После AI-фильтрации осталось объявлений: %s; ожидают повтора: %s",
@@ -95,7 +97,11 @@ class AdPipeline:
     ) -> list[dict[str, Any]]:
         result = [dict(ad) for ad in ads]
         if result:
+            # Сначала используем уже известную модель CPU, чтобы не отправлять
+            # фотографии в Gemini только ради сокета.
+            self._infer_sockets_from_cpu_models(result)
             self._merge_vision_specs(result)
+            self._infer_sockets_from_cpu_models(result)
         return result
 
     def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
@@ -109,6 +115,12 @@ class AdPipeline:
             self._set_exact_value(ad, "cpu_model", spec.cpu_model)
             self._set_exact_value(ad, "ram_type", spec.ram_type)
             self._set_exact_value(ad, "ram_gb", spec.ram_gb)
+            self._set_text_socket(
+                ad,
+                spec.cpu_socket,
+                spec.cpu_socket_source,
+                spec.cpu_socket_confidence,
+            )
 
     def _merge_vision_specs(self, ads: list[dict[str, Any]]) -> None:
         specs_by_link = {
@@ -138,6 +150,12 @@ class AdPipeline:
             )
             self._set_vision_guess(
                 ad,
+                "cpu_socket",
+                spec.cpu_socket,
+                spec.cpu_socket_confidence,
+            )
+            self._set_vision_guess(
+                ad,
                 "product_type",
                 spec.product_type,
                 spec.product_type_confidence,
@@ -148,6 +166,46 @@ class AdPipeline:
                 spec.estimated_system_power_w,
                 spec.estimated_system_power_w_confidence,
             )
+
+    @staticmethod
+    def _set_text_socket(
+        ad: dict[str, Any],
+        value: str | None,
+        source: str | None,
+        confidence: str | None,
+    ) -> None:
+        if ad.get("cpu_socket") not in (None, "") or value is None:
+            return
+        resolved_source = source or "description_guess"
+        ad["cpu_socket"] = value
+        ad["cpu_socket_source"] = resolved_source
+        if resolved_source == "text_exact":
+            ad.pop("cpu_socket_confidence", None)
+        elif confidence is not None:
+            ad["cpu_socket_confidence"] = confidence
+
+    @staticmethod
+    def _infer_sockets_from_cpu_models(ads: list[dict[str, Any]]) -> None:
+        confidence_order = {"low": 0, "medium": 1, "high": 2}
+        for ad in ads:
+            if ad.get("cpu_socket") not in (None, ""):
+                continue
+            guess = infer_socket_from_cpu(ad.get("cpu_model"))
+            if guess is None:
+                continue
+
+            confidence = guess.confidence
+            cpu_confidence = ad.get("cpu_model_confidence")
+            if cpu_confidence in confidence_order:
+                confidence = min(
+                    confidence,
+                    cpu_confidence,
+                    key=confidence_order.__getitem__,
+                )
+
+            ad["cpu_socket"] = guess.socket
+            ad["cpu_socket_source"] = "cpu_model_guess"
+            ad["cpu_socket_confidence"] = confidence
 
     @staticmethod
     def _set_exact_value(ad: dict[str, Any], field: str, value: Any) -> None:

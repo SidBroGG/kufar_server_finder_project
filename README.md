@@ -46,13 +46,15 @@ python -m kufar_server_finder collect --computers-only --max-price 50 --output o
 `--max-price` передаётся в поисковый API Kufar и дополнительно проверяется локально.
 Страницы дорогих объявлений не открываются для загрузки описания.
 
-Фильтрация и извлечение только точных характеристик из текста:
+Фильтрация, извлечение точных CPU/ОЗУ и определение сокета:
 
 ```powershell
 python -m kufar_server_finder analyze --input output_unfiltered.json --output output.json --extract-specs
 ```
 
-Старый флаг `--infer-specs` оставлен как псевдоним, но теперь тоже запрещает догадки.
+Старый флаг `--infer-specs` оставлен как псевдоним. CPU и ОЗУ не угадываются,
+но `cpu_socket` может определяться по явно указанной модели CPU, материнской
+плате, чипсету или платформе из описания.
 
 Отдельный этап анализа фотографий:
 
@@ -63,6 +65,7 @@ python -m kufar_server_finder vision --input output.json --output output_vision.
 Фото-анализ не перезаписывает точные текстовые данные. Угаданные значения получают поля:
 
 - `cpu_model_source: "image_guess"`;
+- `cpu_socket_source: "image_guess"`;
 - `ram_type_source: "image_guess"`;
 - `ram_gb_source: "image_guess"`;
 - `product_type_source: "image_guess"`;
@@ -77,6 +80,16 @@ python -m kufar_server_finder vision --input output.json --output output_vision.
 системы по фотографиям. Это не номинал блока питания и не TDP одного CPU.
 
 Точные значения из текста помечаются `*_source: "text_exact"`.
+
+Для сокета используются источники:
+
+- `text_exact` — сокет прямо написан в объявлении;
+- `description_guess` — определён по плате, чипсету или платформе;
+- `cpu_model_guess` — определён локально по модели процессора;
+- `image_guess` — определён по фотографии.
+
+Для догадок добавляется `cpu_socket_confidence`: `low`, `medium` или `high`.
+Сокет также определяется локально после распознавания CPU по тексту или фото.
 
 ## Тесты
 

@@ -30,6 +30,7 @@ class FakeAnalyzer:
                 cpu_model="Core i5-3470",
                 ram_type=None,
                 ram_gb=8,
+                cpu_socket=None,
             )
         ]
 
@@ -43,6 +44,8 @@ class FakeAnalyzer:
                 ram_type_confidence="high",
                 ram_gb=16,
                 ram_gb_confidence="medium",
+                cpu_socket=None,
+                cpu_socket_confidence=None,
                 product_type="thin_client",
                 product_type_confidence="high",
                 estimated_system_power_w=35,
@@ -95,6 +98,9 @@ def test_extracts_explicit_specs_and_marks_source():
     assert result[0]["cpu_model"] == "Core i5-3470"
     assert result[0]["cpu_model_source"] == "text_exact"
     assert result[0]["ram_gb"] == 8
+    assert result[0]["cpu_socket"] == "LGA1155"
+    assert result[0]["cpu_socket_source"] == "cpu_model_guess"
+    assert result[0]["cpu_socket_confidence"] == "high"
 
 
 def test_vision_adds_product_type_and_estimated_system_power():
@@ -108,7 +114,35 @@ def test_vision_adds_product_type_and_estimated_system_power():
     assert result[0]["estimated_system_power_w"] == 35
     assert result[0]["estimated_system_power_w_source"] == "image_guess"
     assert result[0]["estimated_system_power_w_confidence"] == "medium"
+    assert result[0]["cpu_socket"] == "LGA1155"
+    assert result[0]["cpu_socket_source"] == "cpu_model_guess"
+    assert result[0]["cpu_socket_confidence"] == "low"
     assert source == [{"link": "https://example/working"}]
+
+
+def test_text_socket_guess_has_priority_over_cpu_model_mapping():
+    class DescriptionSocketAnalyzer(FakeAnalyzer):
+        def extract_explicit_specs(self, ads):
+            return [
+                PCComponentSpec(
+                    link="https://example/working",
+                    cpu_model="Core i5-3470",
+                    ram_type=None,
+                    ram_gb=None,
+                    cpu_socket="LGA1150",
+                    cpu_socket_source="description_guess",
+                    cpu_socket_confidence="medium",
+                )
+            ]
+
+    source = [{"link": "https://example/working", "price": 50}]
+    result = AdPipeline(DescriptionSocketAnalyzer()).filter_working_targets(
+        source,
+        extract_specs=True,
+    )
+
+    assert result[0]["cpu_socket"] == "LGA1150"
+    assert result[0]["cpu_socket_source"] == "description_guess"
 
 
 def test_vision_does_not_overwrite_existing_product_type_or_power():
