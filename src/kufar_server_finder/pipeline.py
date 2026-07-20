@@ -12,11 +12,13 @@ class AdsAnalyzer(Protocol):
     def analyze_ads(self, ads: list[dict[str, Any]]) -> list[AdAnalysis]: ...
 
     def extract_explicit_specs(
-        self, ads: list[dict[str, Any]]
+        self,
+        ads: list[dict[str, Any]],
     ) -> list[PCComponentSpec]: ...
 
     def infer_specs_from_images(
-        self, ads: list[dict[str, Any]]
+        self,
+        ads: list[dict[str, Any]],
     ) -> list[VisionComponentSpec]: ...
 
 
@@ -29,28 +31,62 @@ class AdPipeline:
         ads: list[dict[str, Any]],
         *,
         extract_specs: bool = False,
+        infer_specs: bool | None = None,
     ) -> list[dict[str, Any]]:
+        # Совместимость со старым именем аргумента.
+        if infer_specs is not None:
+            extract_specs = infer_specs
         if not ads:
             return []
 
         analyses = self.analyzer.analyze_ads(ads)
-        by_link = {item.link: item for item in analyses}
-
+        analyses_by_link = {item.link: item for item in analyses}
         filtered: list[dict[str, Any]] = []
+        pending_count = 0
+
         for ad in ads:
             link = ad.get("link")
-            analysis = by_link.get(link)
-            if not analysis or not analysis.is_target or not analysis.is_working:
+            analysis = analyses_by_link.get(link)
+            description_failed = bool(ad.get("description_load_error")) or (
+                ad.get("description_status") == "load_error"
+            )
+
+            if analysis is None:
+                item = dict(ad)
+                item["analysis_status"] = "pending"
+                item["analysis_error"] = "Gemini не вернул результат для объявления"
+                filtered.append(item)
+                pending_count += 1
+                continue
+
+            # При сетевой ошибке описания отрицательный вывод ненадёжен:
+            # сохраняем объявление для повторной обработки вместо удаления.
+            if description_failed and not (analysis.is_target and analysis.is_working):
+                item = dict(ad)
+                item["analysis_status"] = "pending"
+                item["analysis_error"] = (
+                    "Описание не загрузилось; отрицательный AI-результат не применён"
+                )
+                filtered.append(item)
+                pending_count += 1
+                continue
+
+            if not analysis.is_target or not analysis.is_working:
                 continue
 
             item = dict(ad)
-            item["price"] = analysis.real_price
+            if analysis.real_price > 0:
+                item["price"] = analysis.real_price
             filtered.append(item)
 
         if extract_specs and filtered:
             self._merge_explicit_specs(filtered)
 
-        logger.info("После AI-фильтрации осталось объявлений: %s", len(filtered))
+        logger.info(
+            "После AI-фильтрации осталось объявлений: %s; ожидают повтора: %s",
+            len(filtered),
+            pending_count,
+        )
         return filtered
 
     def enrich_missing_specs_from_images(
@@ -107,6 +143,7 @@ class AdPipeline:
             return
         ad[field] = value
         ad[f"{field}_source"] = "text_exact"
+        ad.pop(f"{field}_confidence", None)
 
     @staticmethod
     def _set_vision_guess(

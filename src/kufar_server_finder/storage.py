@@ -11,7 +11,15 @@ def load_ads(path: str | Path) -> list[dict[str, Any]]:
         data = json.load(file)
     if not isinstance(data, list):
         raise ValueError(f"{source}: ожидается JSON-массив")
-    return [item for item in data if isinstance(item, dict)]
+
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"{source}: элемент с индексом {index} должен быть JSON-объектом"
+            )
+        result.append(item)
+    return result
 
 
 def save_ads(path: str | Path, ads: list[dict[str, Any]]) -> None:
@@ -19,5 +27,3 @@ def save_ads(path: str | Path, ads: list[dict[str, Any]]) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as file:
         json.dump(ads, file, ensure_ascii=False, indent=2)
-
-

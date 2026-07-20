@@ -25,8 +25,6 @@ class KufarClient:
         "Возможен обмен",
         "Товары с Куфар Доставкой",
         "Товары с Куфар Оплатой",
-        "Распродажа на Куфаре",
-        "Размер скидки"
     }
 
     def __init__(
@@ -37,10 +35,7 @@ class KufarClient:
         self.config = config or KufarConfig()
         self.session = session or requests.Session()
         self.session.headers.update(
-            {
-                "User-Agent": self.config.user_agent,
-                "Accept": "application/json",
-            }
+            {"User-Agent": self.config.user_agent, "Accept": "application/json"}
         )
 
     def fetch_ads(
@@ -52,7 +47,6 @@ class KufarClient:
         load_descriptions: bool = True,
     ) -> list[dict[str, Any]]:
         categories: list[str | None]
-
         if computers_only:
             categories = [
                 self.config.category_computers,
@@ -67,7 +61,6 @@ class KufarClient:
         for category in categories:
             params = self._build_search_params(query, category)
             page_number = 1
-
             logger.info(
                 "Запуск парсера: query=%r, category=%r, max_price=%s BYN",
                 query,
@@ -76,22 +69,14 @@ class KufarClient:
             )
 
             while True:
-                logger.info(
-                    "Загрузка категории %r, страница #%s",
-                    category,
-                    page_number,
-                )
-
+                logger.info("Загрузка категории %r, страница #%s", category, page_number)
                 if self.config.page_delay:
                     time.sleep(self.config.page_delay)
 
                 data = self._get_json(self.SEARCH_URL, params=params)
                 ads = data.get("ads") or []
-
                 if not ads:
                     break
-
-                should_stop = False
 
                 for raw_ad in ads:
                     parsed = self._parse_ad(
@@ -101,77 +86,89 @@ class KufarClient:
                     if parsed is None:
                         continue
 
+                    # Не прекращаем страницу/категорию: Kufar иногда вставляет
+                    # объявления не строго по сортировке.
                     if parsed["price"] > max_price:
-                        should_stop = True
-                        break
+                        continue
 
                     link = parsed["link"]
                     if link in seen_links:
                         continue
-
                     seen_links.add(link)
                     results.append(parsed)
-
-                if should_stop:
-                    break
 
                 cursor = self._extract_next_cursor(data)
                 if not cursor:
                     break
-
                 params["cursor"] = cursor
                 page_number += 1
 
         results.sort(key=lambda ad: ad["price"])
-
         logger.info("Собрано объявлений: %s", len(results))
         return results
 
     def _build_search_params(
-            self,
-            query: str | None,
-            category: str | None,
-        ) -> dict[str, str]:
-            params = {
-                "rgn": self.config.region,
-                "sort": "prc.a",
-                "size": str(self.config.page_size),
-                "lang": "ru",
-            }
-
-            if query:
-                params["query"] = query
-
-            if category:
-                params["cat"] = category
-
-            return params
+        self,
+        query: str | None,
+        category: str | None,
+    ) -> dict[str, str]:
+        params = {
+            "rgn": self.config.region,
+            "sort": "prc.a",
+            "size": str(self.config.page_size),
+            "lang": "ru",
+        }
+        if query:
+            params["query"] = query
+        if category:
+            params["cat"] = category
+        return params
 
     def _parse_ad(
-        self, raw_ad: dict[str, Any], *, load_descriptions: bool
+        self,
+        raw_ad: dict[str, Any],
+        *,
+        load_descriptions: bool,
     ) -> dict[str, Any] | None:
         link = raw_ad.get("ad_link")
         if not link:
             return None
 
-        title = raw_ad.get("subject") or "Без названия"
         price = self._parse_price(raw_ad.get("price_byn"))
+        # Нулевая, отсутствующая или сломанная цена означает пропуск объявления.
+        if price is None:
+            logger.debug("Объявление пропущено из-за некорректной цены: %s", link)
+            return None
+
+        title = raw_ad.get("subject") or "Без названия"
         characteristics = self._parse_characteristics(raw_ad)
         images = self._parse_images(raw_ad)
-        description = (
-            self._fetch_description(link)
-            if load_descriptions
-            else "Описание не загружалось"
-        )
 
-        return {
+        description_status = "not_requested"
+        description = ""
+        if load_descriptions:
+            loaded_description = self._fetch_description(link)
+            if loaded_description is None:
+                # Ошибка сети не маскируется под настоящий текст объявления.
+                description_status = "load_error"
+            elif loaded_description:
+                description = loaded_description
+                description_status = "loaded"
+            else:
+                description_status = "missing"
+
+        result: dict[str, Any] = {
             "title": title,
             "price": price,
             "link": link,
             "images": images,
             "description": description,
+            "description_status": description_status,
             "characteristics": characteristics,
         }
+        if description_status == "load_error":
+            result["description_load_error"] = True
+        return result
 
     def _get_json(self, url: str, **kwargs: Any) -> dict[str, Any]:
         response = self.session.get(
@@ -185,7 +182,7 @@ class KufarClient:
             raise ValueError("Kufar вернул JSON неожиданного формата")
         return payload
 
-    def _fetch_description(self, link: str) -> str:
+    def _fetch_description(self, link: str) -> str | None:
         if self.config.detail_delay:
             time.sleep(self.config.detail_delay)
 
@@ -194,12 +191,10 @@ class KufarClient:
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             block = soup.find(attrs={"itemprop": "description"})
-            if block:
-                return block.get_text(separator="\n", strip=True)
-            return "Описание отсутствует"
+            return block.get_text(separator="\n", strip=True) if block else ""
         except requests.RequestException as exc:
             logger.warning("Не удалось загрузить описание %s: %s", link, exc)
-            return "Описание не удалось загрузить"
+            return None
 
     @classmethod
     def _parse_characteristics(cls, raw_ad: dict[str, Any]) -> dict[str, str]:
@@ -221,13 +216,14 @@ class KufarClient:
         return result
 
     @staticmethod
-    def _parse_price(value: Any) -> float:
+    def _parse_price(value: Any) -> float | None:
         if value is None:
-            return 0.0
+            return None
         try:
-            return int(value) / 100
-        except (TypeError, ValueError):
-            return 0.0
+            price = int(value) / 100
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return price if price > 0 else None
 
     @staticmethod
     def _extract_next_cursor(data: dict[str, Any]) -> str | None:
@@ -236,5 +232,3 @@ class KufarClient:
             if page.get("label") == "next":
                 return page.get("token") or page.get("cursor")
         return None
-
-

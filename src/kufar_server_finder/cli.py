@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--input", default="output_unfiltered.json")
     analyze.add_argument("--output", default="output.json")
     _add_extract_specs_argument(analyze)
+    _add_dataset_argument(analyze)
 
     vision = subparsers.add_parser(
         "vision",
@@ -37,20 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     vision.add_argument("--input", default="output.json")
     vision.add_argument("--output", default="output_vision.json")
 
-    benchmark = subparsers.add_parser(
-        "benchmark",
-        help="Добавить CPU benchmark points из CSV",
-    )
-    benchmark.add_argument("--input", default="output_vision.json")
-    benchmark.add_argument("--output", default="output_benchmark.json")
-    benchmark.add_argument("--dataset", default="CPU_benchmark_v4.csv")
-
     run = subparsers.add_parser("run", help="Собрать объявления и сразу обработать")
     _add_collect_arguments(run)
     run.add_argument("--raw-output", default="output_unfiltered.json")
     run.add_argument("--output", default="output.json")
-    run.add_argument("--dataset", default="CPU_benchmark_v4.csv")
     _add_extract_specs_argument(run)
+    _add_dataset_argument(run)
 
     return parser
 
@@ -62,6 +55,14 @@ def _add_extract_specs_argument(parser: argparse.ArgumentParser) -> None:
         dest="extract_specs",
         action="store_true",
         help="Извлечь только явно написанные CPU и ОЗУ, без догадок",
+    )
+
+
+def _add_dataset_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        help="CSV-датасет CPU Benchmark для добавления cpu_mark",
     )
 
 
@@ -97,6 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "analyze":
             ads = load_ads(args.input)
             result = _analyze(ads, extract_specs=args.extract_specs)
+            result = _apply_benchmark(result, args.dataset)
             save_ads(args.output, result)
             logger.info("Результат сохранён: %s", args.output)
             return 0
@@ -108,25 +110,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.info("Результат фото-анализа сохранён: %s", args.output)
             return 0
 
-        if args.command == "benchmark":
-            ads = load_ads(args.input)
-            result = _benchmark(ads, dataset_path=args.dataset)
-            save_ads(args.output, result)
-            logger.info("Результат benchmark сохранён: %s", args.output)
-            return 0
-
         if args.command == "run":
             ads = _collect(args)
             save_ads(args.raw_output, ads)
             result = _analyze(ads, extract_specs=args.extract_specs)
-            result = _vision(result)
-            result = _benchmark(ads=result, dataset_path=args.dataset)
+            result = _apply_benchmark(result, args.dataset)
             save_ads(args.output, result)
-            logger.info(
-                "Сырые данные: %s; итог: %s",
-                args.raw_output,
-                args.output,
-            )
+            logger.info("Сырые данные: %s; итог: %s", args.raw_output, args.output)
             return 0
     except (ValueError, OSError) as exc:
         logger.error("%s", exc)
@@ -161,20 +151,18 @@ def _build_pipeline() -> AdPipeline:
 
 
 def _analyze(ads: list[dict], *, extract_specs: bool) -> list[dict]:
-    return _build_pipeline().filter_working_targets(
-        ads,
-        extract_specs=extract_specs,
-    )
+    return _build_pipeline().filter_working_targets(ads, extract_specs=extract_specs)
 
 
 def _vision(ads: list[dict]) -> list[dict]:
     return _build_pipeline().enrich_missing_specs_from_images(ads)
 
 
-def _benchmark(
-    ads: list[dict],
-    *,
-    dataset_path: str,
-) -> list[dict]:
+def _apply_benchmark(ads: list[dict], dataset_path: str | None) -> list[dict]:
+    if not dataset_path:
+        return ads
     dataset = CpuBenchmarkDataset.from_csv(dataset_path)
-    return dataset.add_points(ads)
+    result = dataset.enrich_ads(ads)
+    matched = sum(1 for ad in result if "cpu_mark" in ad)
+    logger.info("Benchmark найден для %s из %s объявлений", matched, len(result))
+    return result
