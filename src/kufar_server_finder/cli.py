@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_collect_arguments(run)
     run.add_argument("--raw-output", default="output_unfiltered.json")
     run.add_argument("--output", default="output.json")
+    run.add_argument("--dataset", default="CPU_benchmark_v4.csv")
     _add_extract_specs_argument(run)
 
     return parser
