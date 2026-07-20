@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterable
 from typing import Any, TypeVar
 
 import requests
@@ -39,7 +38,16 @@ class GeminiAnalyzer:
         image_session: requests.Session | None = None,
     ) -> None:
         self.config = config
-        self.client = client or genai.Client(api_key=config.api_key)
+
+        if client is not None:
+            self._clients = [client]
+        else:
+            self._clients = [
+                genai.Client(api_key=api_key) for api_key in config.api_keys
+            ]
+
+        self._client_index = 0
+        self.client = self._clients[0]
         self.image_session = image_session or requests.Session()
         self.image_session.headers.update(
             {
@@ -203,8 +211,11 @@ class GeminiAnalyzer:
         adapter: TypeAdapter[Any],
     ) -> Any | None:
         last_error: Exception | None = None
+        rate_limit_attempts = 0
+        other_attempts = 0
+        max_rate_limit_attempts = self.config.max_retries * len(self._clients)
 
-        for attempt in range(1, self.config.max_retries + 1):
+        while True:
             try:
                 response = self.client.models.generate_content(
                     model=model,
@@ -221,17 +232,57 @@ class GeminiAnalyzer:
                 return adapter.validate_python(json.loads(response.text))
             except Exception as exc:  # SDK выбрасывает несколько типов ошибок
                 last_error = exc
+
+                if self._is_rate_limit_error(exc):
+                    rate_limit_attempts += 1
+                    previous_key = self._client_index + 1
+                    self._rotate_api_key()
+                    logger.warning(
+                        "Gemini 429 на ключе %s/%s; следующий ключ %s/%s; "
+                        "попытка %s/%s",
+                        previous_key,
+                        len(self._clients),
+                        self._client_index + 1,
+                        len(self._clients),
+                        rate_limit_attempts,
+                        max_rate_limit_attempts,
+                    )
+                    if rate_limit_attempts < max_rate_limit_attempts:
+                        continue
+                    break
+
+                other_attempts += 1
                 logger.warning(
                     "Ошибка Gemini, попытка %s/%s: %s",
-                    attempt,
+                    other_attempts,
                     self.config.max_retries,
                     exc,
                 )
-                if attempt < self.config.max_retries:
-                    time.sleep(min(2 ** (attempt - 1), 8))
+                if other_attempts >= self.config.max_retries:
+                    break
+                time.sleep(min(2 ** (other_attempts - 1), 8))
 
         logger.error("Запрос пропущен после повторных ошибок: %s", last_error)
         return None
+
+    def _rotate_api_key(self) -> None:
+        self._client_index = (self._client_index + 1) % len(self._clients)
+        self.client = self._clients[self._client_index]
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        for attribute in ("code", "status_code"):
+            value = getattr(exc, attribute, None)
+            if callable(value):
+                value = value()
+            try:
+                if int(value) == 429:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        message = str(exc).upper()
+        return "429" in message or "RESOURCE_EXHAUSTED" in message
 
     def _download_image_parts(self, ad: dict[str, Any]) -> list[types.Part]:
         parts: list[types.Part] = []
@@ -249,7 +300,11 @@ class GeminiAnalyzer:
                 mime_type = response.headers.get("Content-Type", "").split(";", 1)[0]
                 mime_type = mime_type.strip().lower()
                 if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
-                    logger.warning("Неподдерживаемый формат изображения %s: %s", url, mime_type)
+                    logger.warning(
+                        "Неподдерживаемый формат изображения %s: %s",
+                        url,
+                        mime_type,
+                    )
                     continue
                 parts.append(
                     types.Part.from_bytes(

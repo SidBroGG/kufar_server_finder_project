@@ -19,6 +19,7 @@ DEFAULT_IMAGE_TIMEOUT = 20.0
 @dataclass(frozen=True, slots=True)
 class GeminiConfig:
     api_key: str
+    backup_api_keys: tuple[str, ...] = ()
     analysis_model: str = DEFAULT_ANALYSIS_MODEL
     specs_model: str = DEFAULT_SPECS_MODEL
     vision_model: str = DEFAULT_VISION_MODEL
@@ -30,18 +31,33 @@ class GeminiConfig:
     image_timeout: float = DEFAULT_IMAGE_TIMEOUT
     max_description_chars: int = 1_200
 
+    @property
+    def api_keys(self) -> tuple[str, ...]:
+        return (self.api_key, *self.backup_api_keys)
+
     @classmethod
     def from_env(cls) -> "GeminiConfig":
         load_dotenv()
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
-        if not api_key:
+        api_keys = tuple(
+            dict.fromkeys(
+                key
+                for key in (
+                    os.getenv("GEMINI_API_KEY", "").strip(),
+                    os.getenv("GEMINI_API_KEY_2", "").strip(),
+                    os.getenv("GEMINI_API_KEY_3", "").strip(),
+                )
+                if key
+            )
+        )
+        if not api_keys:
             raise ValueError(
                 "Переменная GEMINI_API_KEY не задана. "
                 "Скопируйте .env.example в .env и укажите ключ."
             )
 
         return cls(
-            api_key=api_key,
+            api_key=api_keys[0],
+            backup_api_keys=api_keys[1:],
             analysis_model=os.getenv(
                 "GEMINI_ANALYSIS_MODEL", DEFAULT_ANALYSIS_MODEL
             ),
