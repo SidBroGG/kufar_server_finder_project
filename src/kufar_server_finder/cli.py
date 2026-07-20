@@ -4,6 +4,7 @@ import argparse
 import logging
 from collections.abc import Sequence
 
+from .benchmark import CpuBenchmarkDataset
 from .config import GeminiConfig, KufarConfig
 from .kufar import KufarClient
 from .pipeline import AdPipeline
@@ -35,6 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vision.add_argument("--input", default="output.json")
     vision.add_argument("--output", default="output_vision.json")
+
+    benchmark = subparsers.add_parser(
+        "benchmark",
+        help="Добавить CPU benchmark points из CSV",
+    )
+    benchmark.add_argument("--input", default="output_vision.json")
+    benchmark.add_argument("--output", default="output_benchmark.json")
+    benchmark.add_argument("--dataset", default="CPU_benchmark_v4.csv")
 
     run = subparsers.add_parser("run", help="Собрать объявления и сразу обработать")
     _add_collect_arguments(run)
@@ -98,6 +107,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.info("Результат фото-анализа сохранён: %s", args.output)
             return 0
 
+        if args.command == "benchmark":
+            ads = load_ads(args.input)
+            result = _benchmark(ads, dataset_path=args.dataset)
+            save_ads(args.output, result)
+            logger.info("Результат benchmark сохранён: %s", args.output)
+            return 0
+
         if args.command == "run":
             ads = _collect(args)
             save_ads(args.raw_output, ads)
@@ -151,3 +167,12 @@ def _analyze(ads: list[dict], *, extract_specs: bool) -> list[dict]:
 
 def _vision(ads: list[dict]) -> list[dict]:
     return _build_pipeline().enrich_missing_specs_from_images(ads)
+
+
+def _benchmark(
+    ads: list[dict],
+    *,
+    dataset_path: str,
+) -> list[dict]:
+    dataset = CpuBenchmarkDataset.from_csv(dataset_path)
+    return dataset.add_points(ads)
