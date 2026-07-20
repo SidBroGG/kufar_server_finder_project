@@ -1,50 +1,21 @@
 # Kufar Server Finder
 
-Небольшой проект для:
+Проект выполняет обработку в независимых этапах:
 
-1. сбора объявлений Kufar с сортировкой по цене;
-2. AI-фильтрации рабочих устройств, подходящих под Debian-сервер;
-3. опционального определения CPU, типа и объёма ОЗУ.
-
-Архитектура намеренно простая:
-
-- `kufar.py` — работа с Kufar;
-- `gemini.py` — обращения к Gemini и валидация ответов;
-- `pipeline.py` — бизнес-логика фильтрации и объединения результатов;
-- `config.py` — настройки;
-- `cli.py` — команды запуска;
-- `storage.py` — чтение и запись JSON.
+1. `collect` — собирает объявления;
+2. `analyze` — фильтрует рабочие устройства и при необходимости извлекает только явно написанные характеристики;
+3. `vision` — отдельно анализирует фотографии и заполняет только отсутствующие характеристики.
 
 ## Установка
 
-```bash
+```powershell
 python -m venv .venv
-```
-
-Linux/macOS:
-
-```bash
-source .venv/bin/activate
-```
-
-Windows PowerShell:
-
-```powershell
 .venv\Scripts\Activate.ps1
-```
-
-```bash
-pip install -e .
-cp .env.example .env
-```
-
-На Windows вместо `cp` можно выполнить:
-
-```powershell
+pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-В `.env` укажите новый Gemini API-ключ:
+В `.env` укажите:
 
 ```env
 GEMINI_API_KEY=...
@@ -52,58 +23,37 @@ GEMINI_API_KEY=...
 
 ## Запуск
 
-Собрать объявления без AI:
+Сбор:
 
-```bash
-python -m kufar_server_finder collect \
-  --computers-only \
-  --max-price 50 \
-  --output output_unfiltered.json
+```powershell
+python -m kufar_server_finder collect --computers-only --max-price 50 --output output_unfiltered.json
 ```
 
-Обработать ранее собранный JSON:
+Фильтрация и извлечение только точных характеристик из текста:
 
-```bash
-python -m kufar_server_finder analyze \
-  --input output_unfiltered.json \
-  --output output.json \
-  --infer-specs
+```powershell
+python -m kufar_server_finder analyze --input output_unfiltered.json --output output.json --extract-specs
 ```
 
-Полный цикл:
+Старый флаг `--infer-specs` оставлен как псевдоним, но теперь тоже запрещает догадки.
 
-```bash
-python -m kufar_server_finder run \
-  --computers-only \
-  --max-price 50 \
-  --raw-output output_unfiltered.json \
-  --output output.json \
-  --infer-specs
+Отдельный этап анализа фотографий:
+
+```powershell
+python -m kufar_server_finder vision --input output.json --output output_vision.json
 ```
 
-После `pip install -e .` доступна и короткая команда:
+Фото-анализ не перезаписывает точные текстовые данные. Угаданные значения получают поля:
 
-```bash
-kufar-server-finder run --computers-only --max-price 50
-```
+- `cpu_model_source: "image_guess"`;
+- `ram_type_source: "image_guess"`;
+- `ram_gb_source: "image_guess"`;
+- соответствующее поле `*_confidence`: `low`, `medium` или `high`.
 
-## Полезные параметры
-
-- `--query "mini pc"` — поисковый запрос;
-- `--no-descriptions` — ускорить сбор, не открывая страницы объявлений;
-- `--page-delay 0.5` — пауза между страницами поиска;
-- `--detail-delay 0.5` — пауза между страницами объявлений;
-- `--timeout 20` — HTTP-таймаут;
-- `--verbose` — подробные логи (параметр ставится до команды).
+Точные значения из текста помечаются `*_source: "text_exact"`.
 
 ## Тесты
 
-```bash
-pip install -e ".[dev]"
+```powershell
 pytest
 ```
-
-## Безопасность
-
-API-ключ не хранится в исходном коде и файл `.env` исключён из Git.
-Ключ, который был встроен в исходный скрипт, следует отозвать и выпустить заново.

@@ -7,10 +7,13 @@ from dotenv import load_dotenv
 
 DEFAULT_ANALYSIS_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_SPECS_MODEL = "gemini-2.5-flash"
+DEFAULT_VISION_MODEL = "gemini-2.5-flash"
 DEFAULT_CHUNK_SIZE = 30
 DEFAULT_SPECS_CHUNK_SIZE = 25
 DEFAULT_REQUEST_DELAY = 2.0
 DEFAULT_MAX_RETRIES = 3
+DEFAULT_VISION_MAX_IMAGES = 5
+DEFAULT_IMAGE_TIMEOUT = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,10 +21,13 @@ class GeminiConfig:
     api_key: str
     analysis_model: str = DEFAULT_ANALYSIS_MODEL
     specs_model: str = DEFAULT_SPECS_MODEL
+    vision_model: str = DEFAULT_VISION_MODEL
     chunk_size: int = DEFAULT_CHUNK_SIZE
     specs_chunk_size: int = DEFAULT_SPECS_CHUNK_SIZE
     request_delay: float = DEFAULT_REQUEST_DELAY
     max_retries: int = DEFAULT_MAX_RETRIES
+    vision_max_images: int = DEFAULT_VISION_MAX_IMAGES
+    image_timeout: float = DEFAULT_IMAGE_TIMEOUT
     max_description_chars: int = 1_200
 
     @classmethod
@@ -40,6 +46,7 @@ class GeminiConfig:
                 "GEMINI_ANALYSIS_MODEL", DEFAULT_ANALYSIS_MODEL
             ),
             specs_model=os.getenv("GEMINI_SPECS_MODEL", DEFAULT_SPECS_MODEL),
+            vision_model=os.getenv("GEMINI_VISION_MODEL", DEFAULT_VISION_MODEL),
             chunk_size=_positive_int("GEMINI_CHUNK_SIZE", DEFAULT_CHUNK_SIZE),
             specs_chunk_size=_positive_int(
                 "GEMINI_SPECS_CHUNK_SIZE", DEFAULT_SPECS_CHUNK_SIZE
@@ -49,6 +56,12 @@ class GeminiConfig:
             ),
             max_retries=_positive_int(
                 "GEMINI_MAX_RETRIES", DEFAULT_MAX_RETRIES
+            ),
+            vision_max_images=_positive_int(
+                "GEMINI_VISION_MAX_IMAGES", DEFAULT_VISION_MAX_IMAGES
+            ),
+            image_timeout=_positive_float(
+                "GEMINI_IMAGE_TIMEOUT", DEFAULT_IMAGE_TIMEOUT
             ),
         )
 
@@ -69,6 +82,13 @@ class KufarConfig:
 
 def _positive_int(name: str, default: int) -> int:
     value = int(os.getenv(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} должен быть больше нуля")
+    return value
+
+
+def _positive_float(name: str, default: float) -> float:
+    value = float(os.getenv(name, str(default)))
     if value <= 0:
         raise ValueError(f"{name} должен быть больше нуля")
     return value

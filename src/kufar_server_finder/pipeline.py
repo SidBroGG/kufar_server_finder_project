@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from .models import AdAnalysis, PCComponentSpec
+from .models import AdAnalysis, PCComponentSpec, VisionComponentSpec
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,13 @@ logger = logging.getLogger(__name__)
 class AdsAnalyzer(Protocol):
     def analyze_ads(self, ads: list[dict[str, Any]]) -> list[AdAnalysis]: ...
 
-    def infer_specs(self, ads: list[dict[str, Any]]) -> list[PCComponentSpec]: ...
+    def extract_explicit_specs(
+        self, ads: list[dict[str, Any]]
+    ) -> list[PCComponentSpec]: ...
+
+    def infer_specs_from_images(
+        self, ads: list[dict[str, Any]]
+    ) -> list[VisionComponentSpec]: ...
 
 
 class AdPipeline:
@@ -22,7 +28,7 @@ class AdPipeline:
         self,
         ads: list[dict[str, Any]],
         *,
-        infer_specs: bool = False,
+        extract_specs: bool = False,
     ) -> list[dict[str, Any]]:
         if not ads:
             return []
@@ -41,19 +47,77 @@ class AdPipeline:
             item["price"] = analysis.real_price
             filtered.append(item)
 
-        if infer_specs and filtered:
-            self._merge_specs(filtered)
+        if extract_specs and filtered:
+            self._merge_explicit_specs(filtered)
 
         logger.info("После AI-фильтрации осталось объявлений: %s", len(filtered))
         return filtered
 
-    def _merge_specs(self, ads: list[dict[str, Any]]) -> None:
+    def enrich_missing_specs_from_images(
+        self,
+        ads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        result = [dict(ad) for ad in ads]
+        if result:
+            self._merge_vision_specs(result)
+        return result
+
+    def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
         specs_by_link = {
-            item.link: item for item in self.analyzer.infer_specs(ads)
+            item.link: item for item in self.analyzer.extract_explicit_specs(ads)
         }
         for ad in ads:
             spec = specs_by_link.get(ad.get("link"))
-            if spec:
-                ad["cpu_model"] = spec.cpu_model
-                ad["ram_type"] = spec.ram_type
-                ad["ram_gb"] = spec.ram_gb
+            if not spec:
+                continue
+            self._set_exact_value(ad, "cpu_model", spec.cpu_model)
+            self._set_exact_value(ad, "ram_type", spec.ram_type)
+            self._set_exact_value(ad, "ram_gb", spec.ram_gb)
+
+    def _merge_vision_specs(self, ads: list[dict[str, Any]]) -> None:
+        specs_by_link = {
+            item.link: item for item in self.analyzer.infer_specs_from_images(ads)
+        }
+        for ad in ads:
+            spec = specs_by_link.get(ad.get("link"))
+            if not spec:
+                continue
+            self._set_vision_guess(
+                ad,
+                "cpu_model",
+                spec.cpu_model,
+                spec.cpu_model_confidence,
+            )
+            self._set_vision_guess(
+                ad,
+                "ram_type",
+                spec.ram_type,
+                spec.ram_type_confidence,
+            )
+            self._set_vision_guess(
+                ad,
+                "ram_gb",
+                spec.ram_gb,
+                spec.ram_gb_confidence,
+            )
+
+    @staticmethod
+    def _set_exact_value(ad: dict[str, Any], field: str, value: Any) -> None:
+        if value is None:
+            return
+        ad[field] = value
+        ad[f"{field}_source"] = "text_exact"
+
+    @staticmethod
+    def _set_vision_guess(
+        ad: dict[str, Any],
+        field: str,
+        value: Any,
+        confidence: str | None,
+    ) -> None:
+        if ad.get(field) not in (None, "") or value is None:
+            return
+        ad[field] = value
+        ad[f"{field}_source"] = "image_guess"
+        if confidence is not None:
+            ad[f"{field}_confidence"] = confidence

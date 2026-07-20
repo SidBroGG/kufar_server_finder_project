@@ -13,3 +13,5 @@ def test_extract_next_cursor_supports_token_and_cursor():
 def test_price_is_converted_from_kopecks():
     assert KufarClient._parse_price("1234") == 12.34
     assert KufarClient._parse_price(None) == 0.0
+
+

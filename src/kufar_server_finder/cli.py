@@ -24,22 +24,35 @@ def build_parser() -> argparse.ArgumentParser:
     _add_collect_arguments(collect)
     collect.add_argument("--output", default="output_unfiltered.json")
 
-    analyze = subparsers.add_parser("analyze", help="Обработать готовый JSON через Gemini")
+    analyze = subparsers.add_parser("analyze", help="Отфильтровать готовый JSON")
     analyze.add_argument("--input", default="output_unfiltered.json")
     analyze.add_argument("--output", default="output.json")
-    analyze.add_argument(
-        "--infer-specs",
-        action="store_true",
-        help="Дополнительно определить CPU и ОЗУ",
+    _add_extract_specs_argument(analyze)
+
+    vision = subparsers.add_parser(
+        "vision",
+        help="Отдельно угадать отсутствующие характеристики по фотографиям",
     )
+    vision.add_argument("--input", default="output.json")
+    vision.add_argument("--output", default="output_vision.json")
 
     run = subparsers.add_parser("run", help="Собрать объявления и сразу обработать")
     _add_collect_arguments(run)
     run.add_argument("--raw-output", default="output_unfiltered.json")
     run.add_argument("--output", default="output.json")
-    run.add_argument("--infer-specs", action="store_true")
+    _add_extract_specs_argument(run)
 
     return parser
+
+
+def _add_extract_specs_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--extract-specs",
+        "--infer-specs",
+        dest="extract_specs",
+        action="store_true",
+        help="Извлечь только явно написанные CPU и ОЗУ, без догадок",
+    )
 
 
 def _add_collect_arguments(parser: argparse.ArgumentParser) -> None:
@@ -73,15 +86,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "analyze":
             ads = load_ads(args.input)
-            result = _analyze(ads, infer_specs=args.infer_specs)
+            result = _analyze(ads, extract_specs=args.extract_specs)
             save_ads(args.output, result)
             logger.info("Результат сохранён: %s", args.output)
+            return 0
+
+        if args.command == "vision":
+            ads = load_ads(args.input)
+            result = _vision(ads)
+            save_ads(args.output, result)
+            logger.info("Результат фото-анализа сохранён: %s", args.output)
             return 0
 
         if args.command == "run":
             ads = _collect(args)
             save_ads(args.raw_output, ads)
-            result = _analyze(ads, infer_specs=args.infer_specs)
+            result = _analyze(ads, extract_specs=args.extract_specs)
             save_ads(args.output, result)
             logger.info(
                 "Сырые данные: %s; итог: %s",
@@ -114,12 +134,19 @@ def _collect(args: argparse.Namespace) -> list[dict]:
     )
 
 
-def _analyze(ads: list[dict], *, infer_specs: bool) -> list[dict]:
+def _build_pipeline() -> AdPipeline:
     config = GeminiConfig.from_env()
     from .gemini import GeminiAnalyzer
 
-    analyzer = GeminiAnalyzer(config)
-    return AdPipeline(analyzer).filter_working_targets(
+    return AdPipeline(GeminiAnalyzer(config))
+
+
+def _analyze(ads: list[dict], *, extract_specs: bool) -> list[dict]:
+    return _build_pipeline().filter_working_targets(
         ads,
-        infer_specs=infer_specs,
+        extract_specs=extract_specs,
     )
+
+
+def _vision(ads: list[dict]) -> list[dict]:
+    return _build_pipeline().enrich_missing_specs_from_images(ads)

@@ -19,3 +19,5 @@ def save_ads(path: str | Path, ads: list[dict[str, Any]]) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as file:
         json.dump(ads, file, ensure_ascii=False, indent=2)
+
+

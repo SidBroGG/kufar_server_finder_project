@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,13 +27,26 @@ class PCComponentSpec(BaseModel):
     link: str = Field(description="Ссылка объявления")
     cpu_model: str | None = Field(
         default=None,
-        description="Точная модель процессора либо платформа/сокет",
+        description="Только явно указанная точная модель процессора",
     )
     ram_type: str | None = Field(
         default=None,
-        description="DDR2, DDR3, DDR4, DDR5 либо null",
+        description="Только явно указанный DDR2/DDR3/DDR4/DDR5 либо null",
     )
     ram_gb: int | None = Field(
         default=None,
-        description="Объём оперативной памяти в ГБ либо null",
+        description="Только явно указанный объём ОЗУ в ГБ либо null",
     )
+
+
+Confidence = Literal["low", "medium", "high"]
+
+
+class VisionComponentSpec(BaseModel):
+    link: str = Field(description="Ссылка объявления")
+    cpu_model: str | None = None
+    cpu_model_confidence: Confidence | None = None
+    ram_type: str | None = None
+    ram_type_confidence: Confidence | None = None
+    ram_gb: int | None = None
+    ram_gb_confidence: Confidence | None = None

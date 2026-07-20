@@ -206,3 +206,5 @@ class KufarClient:
             if page.get("label") == "next":
                 return page.get("token") or page.get("cursor")
         return None
+
+
