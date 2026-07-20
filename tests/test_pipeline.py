@@ -43,6 +43,10 @@ class FakeAnalyzer:
                 ram_type_confidence="high",
                 ram_gb=16,
                 ram_gb_confidence="medium",
+                product_type="thin_client",
+                product_type_confidence="high",
+                estimated_system_power_w=35,
+                estimated_system_power_w_confidence="medium",
             )
         ]
 
@@ -91,3 +95,32 @@ def test_extracts_explicit_specs_and_marks_source():
     assert result[0]["cpu_model"] == "Core i5-3470"
     assert result[0]["cpu_model_source"] == "text_exact"
     assert result[0]["ram_gb"] == 8
+
+
+def test_vision_adds_product_type_and_estimated_system_power():
+    source = [{"link": "https://example/working"}]
+
+    result = AdPipeline(FakeAnalyzer()).enrich_missing_specs_from_images(source)
+
+    assert result[0]["product_type"] == "thin_client"
+    assert result[0]["product_type_source"] == "image_guess"
+    assert result[0]["product_type_confidence"] == "high"
+    assert result[0]["estimated_system_power_w"] == 35
+    assert result[0]["estimated_system_power_w_source"] == "image_guess"
+    assert result[0]["estimated_system_power_w_confidence"] == "medium"
+    assert source == [{"link": "https://example/working"}]
+
+
+def test_vision_does_not_overwrite_existing_product_type_or_power():
+    source = [
+        {
+            "link": "https://example/working",
+            "product_type": "desktop_pc",
+            "estimated_system_power_w": 120,
+        }
+    ]
+
+    result = AdPipeline(FakeAnalyzer()).enrich_missing_specs_from_images(source)
+
+    assert result[0]["product_type"] == "desktop_pc"
+    assert result[0]["estimated_system_power_w"] == 120

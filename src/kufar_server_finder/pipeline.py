@@ -136,6 +136,18 @@ class AdPipeline:
                 spec.ram_gb,
                 spec.ram_gb_confidence,
             )
+            self._set_vision_guess(
+                ad,
+                "product_type",
+                spec.product_type,
+                spec.product_type_confidence,
+            )
+            self._set_vision_guess(
+                ad,
+                "estimated_system_power_w",
+                spec.estimated_system_power_w,
+                spec.estimated_system_power_w_confidence,
+            )
 
     @staticmethod
     def _set_exact_value(ad: dict[str, Any], field: str, value: Any) -> None:

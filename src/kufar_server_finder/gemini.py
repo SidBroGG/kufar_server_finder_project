@@ -321,7 +321,13 @@ class GeminiAnalyzer:
     def _missing_spec_fields(ad: dict[str, Any]) -> list[str]:
         return [
             field
-            for field in ("cpu_model", "ram_type", "ram_gb")
+            for field in (
+                "cpu_model",
+                "ram_type",
+                "ram_gb",
+                "product_type",
+                "estimated_system_power_w",
+            )
             if ad.get(field) in (None, "")
         ]
 

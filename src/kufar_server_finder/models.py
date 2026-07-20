@@ -40,6 +40,17 @@ class PCComponentSpec(BaseModel):
 
 
 Confidence = Literal["low", "medium", "high"]
+ProductType = Literal[
+    "desktop_pc",
+    "laptop",
+    "mini_pc",
+    "thin_client",
+    "server",
+    "workstation",
+    "all_in_one",
+    "motherboard_bundle",
+    "other",
+]
 
 
 class VisionComponentSpec(BaseModel):
@@ -50,3 +61,18 @@ class VisionComponentSpec(BaseModel):
     ram_type_confidence: Confidence | None = None
     ram_gb: int | None = None
     ram_gb_confidence: Confidence | None = None
+    product_type: ProductType | None = Field(
+        default=None,
+        description="Тип товара, определённый по фотографиям",
+    )
+    product_type_confidence: Confidence | None = None
+    estimated_system_power_w: int | None = Field(
+        default=None,
+        ge=1,
+        le=2000,
+        description=(
+            "Примерное максимальное потребление всей системы в ваттах, "
+            "а не мощность блока питания"
+        ),
+    )
+    estimated_system_power_w_confidence: Confidence | None = None

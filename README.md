@@ -65,7 +65,16 @@ python -m kufar_server_finder vision --input output.json --output output_vision.
 - `cpu_model_source: "image_guess"`;
 - `ram_type_source: "image_guess"`;
 - `ram_gb_source: "image_guess"`;
+- `product_type_source: "image_guess"`;
+- `estimated_system_power_w_source: "image_guess"`;
 - соответствующее поле `*_confidence`: `low`, `medium` или `high`.
+
+`product_type` принимает значения `desktop_pc`, `laptop`, `mini_pc`,
+`thin_client`, `server`, `workstation`, `all_in_one`, `motherboard_bundle`
+или `other`.
+
+`estimated_system_power_w` — приблизительное максимальное потребление всей
+системы по фотографиям. Это не номинал блока питания и не TDP одного CPU.
 
 Точные значения из текста помечаются `*_source: "text_exact"`.
 
