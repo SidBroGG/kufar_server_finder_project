@@ -59,7 +59,11 @@ class KufarClient:
         seen_links: set[str] = set()
 
         for category in categories:
-            params = self._build_search_params(query, category)
+            params = self._build_search_params(
+                query,
+                category,
+                max_price=max_price,
+            )
             page_number = 1
             logger.info(
                 "Запуск парсера: query=%r, category=%r, max_price=%s BYN",
@@ -78,7 +82,16 @@ class KufarClient:
                 if not ads:
                     break
 
+                page_has_eligible_price = False
                 for raw_ad in ads:
+                    # Сначала проверяем цену из поискового API. Иначе для каждого
+                    # дорогого объявления выполняется отдельный запрос страницы и
+                    # detail_delay, хотя объявление всё равно будет отброшено.
+                    raw_price = self._parse_price(raw_ad.get("price_byn"))
+                    if raw_price is None or raw_price > max_price:
+                        continue
+                    page_has_eligible_price = True
+
                     parsed = self._parse_ad(
                         raw_ad,
                         load_descriptions=load_descriptions,
@@ -86,16 +99,24 @@ class KufarClient:
                     if parsed is None:
                         continue
 
-                    # Не прекращаем страницу/категорию: Kufar иногда вставляет
-                    # объявления не строго по сортировке.
-                    if parsed["price"] > max_price:
-                        continue
-
                     link = parsed["link"]
                     if link in seen_links:
                         continue
                     seen_links.add(link)
                     results.append(parsed)
+
+                # При сортировке по возрастанию первая полностью дорогая страница
+                # означает, что дальше подходящих цен уже нет. Это также защищает
+                # от полного обхода каталога, если Kufar проигнорировал prc.
+                if not page_has_eligible_price:
+                    logger.info(
+                        "Остановка категории %r: на странице #%s нет объявлений "
+                        "до %s BYN",
+                        category,
+                        page_number,
+                        max_price,
+                    )
+                    break
 
                 cursor = self._extract_next_cursor(data)
                 if not cursor:
@@ -111,6 +132,8 @@ class KufarClient:
         self,
         query: str | None,
         category: str | None,
+        *,
+        max_price: float | None = None,
     ) -> dict[str, str]:
         params = {
             "rgn": self.config.region,
@@ -122,6 +145,11 @@ class KufarClient:
             params["query"] = query
         if category:
             params["cat"] = category
+        if max_price is not None:
+            # Kufar хранит price_byn в копейках. Фильтр prc уменьшает число
+            # страниц ещё на стороне поискового API.
+            max_price_cents = max(0, round(max_price * 100))
+            params["prc"] = f"r:0,{max_price_cents}"
         return params
 
     def _parse_ad(

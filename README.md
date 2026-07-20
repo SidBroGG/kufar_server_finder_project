@@ -43,6 +43,9 @@ GEMINI_API_KEY_3=backup_key_2
 python -m kufar_server_finder collect --computers-only --max-price 50 --output output_unfiltered.json
 ```
 
+`--max-price` передаётся в поисковый API Kufar и дополнительно проверяется локально.
+Страницы дорогих объявлений не открываются для загрузки описания.
+
 Фильтрация и извлечение только точных характеристик из текста:
 
 ```powershell
