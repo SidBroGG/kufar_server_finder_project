@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from .benchmark import CpuBenchmarkDataset
 from .config import GeminiConfig, KufarConfig
+from .excel_export import export_ads_json_to_excel
 from .kufar import KufarClient
 from .pipeline import AdPipeline
 from .storage import load_ads, save_ads
@@ -42,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_collect_arguments(run)
     run.add_argument("--raw-output", default="output_unfiltered.json")
     run.add_argument("--output", default="output.json")
+    run.add_argument(
+        "--excel-output",
+        default="output.xlsx",
+        help="Excel-файл, создаваемый из итогового JSON",
+    )
     _add_extract_specs_argument(run)
     _add_dataset_argument(run)
 
@@ -119,7 +125,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _vision(result)
             result = _apply_benchmark(result, args.dataset)
             save_ads(args.output, result)
-            logger.info("Сырые данные: %s; итог: %s", args.raw_output, args.output)
+            export_ads_json_to_excel(args.output, args.excel_output)
+            logger.info(
+                "Сырые данные: %s; итог: %s; Excel: %s",
+                args.raw_output,
+                args.output,
+                args.excel_output,
+            )
             return 0
     except (ValueError, OSError) as exc:
         logger.error("%s", exc)

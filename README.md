@@ -96,3 +96,17 @@ python -m kufar_server_finder vision --input output.json --output output_vision.
 ```powershell
 pytest
 ```
+
+## Экспорт в Excel
+
+Команда `run` автоматически создаёт Excel-файл из итогового JSON:
+
+```powershell
+python -m kufar_server_finder run --computers-only --max-price 20 --output output.json --excel-output output.xlsx --extract-specs --dataset CPU_benchmark_v4.csv
+```
+
+В Excel попадают тип устройства, цена, ОЗУ, сокет, процессор, CPU Benchmark,
+оценочное потребление системы и ссылка. Отсутствующие значения заменяются прочерком.
+Ячейки с уверенностью `low`, `medium`, `high` окрашиваются соответственно в
+красный, оранжевый и зелёный цвет. Точные текстовые значения и benchmark из
+датасета также отмечаются зелёным.

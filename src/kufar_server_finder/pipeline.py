@@ -9,6 +9,108 @@ from .socket_inference import infer_socket_from_cpu
 logger = logging.getLogger(__name__)
 
 
+_VISUAL_FALLBACKS: dict[str, tuple[str, str, int]] = {
+    "desktop_pc": (
+        "Intel Core / AMD Ryzen (примерное семейство)",
+        "DDR3/DDR4 (примерно)",
+        8,
+    ),
+    "laptop": (
+        "Intel Core Mobile / AMD Ryzen Mobile (примерное семейство)",
+        "DDR3L/DDR4 (примерно)",
+        8,
+    ),
+    "mini_pc": (
+        "Intel Celeron/Pentium/Core U / AMD Ryzen Embedded (примерное семейство)",
+        "DDR3L/DDR4 (примерно)",
+        8,
+    ),
+    "thin_client": (
+        "Intel Atom/Celeron / AMD Embedded (примерное семейство)",
+        "DDR3/DDR4 (примерно)",
+        4,
+    ),
+    "server": (
+        "Intel Xeon / AMD EPYC (примерное семейство)",
+        "DDR3 ECC/DDR4 ECC (примерно)",
+        16,
+    ),
+    "workstation": (
+        "Intel Xeon/Core X / AMD Threadripper (примерное семейство)",
+        "DDR4 ECC/DDR4 (примерно)",
+        16,
+    ),
+    "all_in_one": (
+        "Intel Core Mobile / AMD Ryzen Mobile (примерное семейство)",
+        "DDR3L/DDR4 (примерно)",
+        8,
+    ),
+    "motherboard_bundle": (
+        "Intel Core / AMD Ryzen (примерное семейство)",
+        "DDR3/DDR4 (примерно)",
+        8,
+    ),
+    "other": (
+        "Intel/AMD x86-64 (примерное семейство)",
+        "DDR3/DDR4 (примерно)",
+        8,
+    ),
+}
+
+_SOCKET_CPU_FALLBACKS = {
+    "LGA1155": "Intel Core 2nd/3rd gen (примерное семейство)",
+    "LGA1150": "Intel Core 4th/5th gen (примерное семейство)",
+    "LGA1151": "Intel Core 6th-9th gen (примерное семейство)",
+    "LGA1200": "Intel Core 10th/11th gen (примерное семейство)",
+    "LGA1700": "Intel Core 12th-14th gen (примерное семейство)",
+    "LGA2011": "Intel Xeon E5 v1/v2 (примерное семейство)",
+    "LGA2011-3": "Intel Xeon E5 v3/v4 (примерное семейство)",
+    "AM3": "AMD Phenom II / Athlon II (примерное семейство)",
+    "AM3+": "AMD FX (примерное семейство)",
+    "AM4": "AMD Ryzen 1000-5000 (примерное семейство)",
+    "AM5": "AMD Ryzen 7000-9000 (примерное семейство)",
+    "BGA (SOLDERED)": "Intel/AMD Mobile или Embedded (примерное семейство)",
+}
+
+_SOCKET_RAM_FALLBACKS = {
+    "LGA1155": "DDR3 (примерно)",
+    "LGA1150": "DDR3 (примерно)",
+    "LGA1151": "DDR4/DDR3L (примерно)",
+    "LGA1200": "DDR4 (примерно)",
+    "LGA1700": "DDR4/DDR5 (примерно)",
+    "LGA2011": "DDR3 ECC/DDR3 (примерно)",
+    "LGA2011-3": "DDR4 ECC/DDR4 (примерно)",
+    "AM3": "DDR3 (примерно)",
+    "AM3+": "DDR3 (примерно)",
+    "AM4": "DDR4 (примерно)",
+    "AM5": "DDR5 (примерно)",
+}
+
+_VISUAL_SOCKET_FALLBACKS = {
+    "desktop_pc": "LGA115x/LGA1200/AM4 (примерно)",
+    "laptop": "BGA (soldered, примерно)",
+    "mini_pc": "BGA (soldered, примерно)",
+    "thin_client": "BGA (soldered, примерно)",
+    "server": "LGA2011/LGA3647/SP3 (примерно)",
+    "workstation": "LGA2011-3/LGA2066/TR4 (примерно)",
+    "all_in_one": "BGA (soldered, примерно)",
+    "motherboard_bundle": "LGA115x/LGA1200/AM4 (примерно)",
+    "other": "Неизвестный сокет (примерно)",
+}
+
+_VISUAL_POWER_FALLBACKS = {
+    "desktop_pc": 150,
+    "laptop": 65,
+    "mini_pc": 35,
+    "thin_client": 25,
+    "server": 250,
+    "workstation": 300,
+    "all_in_one": 90,
+    "motherboard_bundle": 100,
+    "other": 100,
+}
+
+
 class AdsAnalyzer(Protocol):
     def analyze_ads(self, ads: list[dict[str, Any]]) -> list[AdAnalysis]: ...
 
@@ -102,6 +204,7 @@ class AdPipeline:
             self._infer_sockets_from_cpu_models(result)
             self._merge_vision_specs(result)
             self._infer_sockets_from_cpu_models(result)
+            self._fill_missing_vision_estimates(result)
         return result
 
     def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
@@ -167,6 +270,85 @@ class AdPipeline:
                 spec.estimated_system_power_w_confidence,
             )
 
+
+    @classmethod
+    def _fill_missing_vision_estimates(
+        cls,
+        ads: list[dict[str, Any]],
+    ) -> None:
+        """Гарантирует непустые visual-поля и их confidence."""
+        for ad in ads:
+            cls._set_visual_fallback(ad, "product_type", "other")
+            product_type = str(ad.get("product_type") or "other")
+            if product_type not in _VISUAL_FALLBACKS:
+                product_type = "other"
+
+            cpu_fallback, ram_type_fallback, ram_gb_fallback = (
+                _VISUAL_FALLBACKS[product_type]
+            )
+
+            socket = str(ad.get("cpu_socket") or "").strip().upper()
+            cpu_fallback = _SOCKET_CPU_FALLBACKS.get(socket, cpu_fallback)
+            ram_type_fallback = _SOCKET_RAM_FALLBACKS.get(
+                socket,
+                ram_type_fallback,
+            )
+
+            cls._set_visual_fallback(ad, "cpu_model", cpu_fallback)
+            cls._set_visual_fallback(ad, "ram_type", ram_type_fallback)
+            cls._set_visual_fallback(ad, "ram_gb", ram_gb_fallback)
+            cls._set_visual_fallback(
+                ad,
+                "cpu_socket",
+                _VISUAL_SOCKET_FALLBACKS[product_type],
+            )
+            cls._set_visual_fallback(
+                ad,
+                "estimated_system_power_w",
+                _VISUAL_POWER_FALLBACKS[product_type],
+            )
+
+            cls._ensure_confidence(ad, "cpu_model")
+            cls._ensure_confidence(ad, "ram_type")
+            cls._ensure_confidence(ad, "ram_gb")
+            cls._ensure_confidence(ad, "cpu_socket")
+            cls._ensure_confidence(ad, "product_type")
+            cls._ensure_confidence(ad, "estimated_system_power_w")
+
+    @staticmethod
+    def _set_visual_fallback(
+        ad: dict[str, Any],
+        field: str,
+        value: Any,
+    ) -> None:
+        current = ad.get(field)
+        is_missing = current is None or (
+            isinstance(current, str) and not current.strip()
+        )
+        if field in {"ram_gb", "estimated_system_power_w"}:
+            try:
+                is_missing = current is None or int(current) <= 0
+            except (TypeError, ValueError):
+                is_missing = True
+        elif field == "product_type":
+            is_missing = current not in _VISUAL_FALLBACKS
+
+        if not is_missing:
+            return
+
+        ad[field] = value
+        ad[f"{field}_source"] = "visual_fallback"
+        ad[f"{field}_confidence"] = "low"
+
+    @staticmethod
+    def _ensure_confidence(ad: dict[str, Any], field: str) -> None:
+        confidence_field = f"{field}_confidence"
+        if ad.get(confidence_field) in {"low", "medium", "high"}:
+            return
+
+        source = ad.get(f"{field}_source")
+        ad[confidence_field] = "high" if source == "text_exact" else "low"
+
     @staticmethod
     def _set_text_socket(
         ad: dict[str, Any],
@@ -228,3 +410,4 @@ class AdPipeline:
         ad[f"{field}_source"] = "image_guess"
         if confidence is not None:
             ad[f"{field}_confidence"] = confidence
+

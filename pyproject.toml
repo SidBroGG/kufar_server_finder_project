@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "beautifulsoup4>=4.12,<5",
   "google-genai>=1.0,<2",
+  "openpyxl>=3.1.5,<4",
   "pydantic>=2.7,<3",
   "python-dotenv>=1.0,<2",
   "requests>=2.31,<3",
@@ -31,5 +32,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
-
