@@ -1,151 +1,238 @@
 from __future__ import annotations
 
 import csv
-import logging
 import re
-import unicodedata
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+DEFAULT_FUZZY_THRESHOLD = 0.90
 
-_VENDOR_AND_GENERIC_WORDS = {
-    "intel",
-    "amd",
-    "cpu",
-    "processor",
-}
+_FREQUENCY_RE = re.compile(
+    r"(?:\s*@\s*|\s+)\d+(?:[.,]\d+)?\s*(?:ghz|mhz)\b",
+    re.IGNORECASE,
+)
+_VENDOR_RE = re.compile(r"\b(?:intel|amd)\b", re.IGNORECASE)
+_NON_ALNUM_RE = re.compile(r"[^a-zа-яё0-9]+", re.IGNORECASE)
+_MODEL_TOKEN_RE = re.compile(r"[a-z]*\d+[a-z0-9]*", re.IGNORECASE)
+_VERSION_TOKEN_RE = re.compile(r"v\d+", re.IGNORECASE)
 
-_RELAXED_WORDS = {
-    "core",
-    "cores",
-    "thread",
-    "threads",
-    "apu",
-}
+BenchmarkRow = dict[str, Any]
 
 
-@dataclass(frozen=True, slots=True)
-class CpuBenchmark:
-    name: str
-    points: int
+def normalize_cpu_name(value: str | None) -> str:
+    """Нормализует название CPU перед сравнением с cpuName из CSV."""
+    if not value:
+        return ""
+
+    normalized = str(value).casefold().replace("ё", "е")
+    normalized = _FREQUENCY_RE.sub(" ", normalized)
+    normalized = _VENDOR_RE.sub(" ", normalized)
+    normalized = _NON_ALNUM_RE.sub(" ", normalized)
+    return " ".join(normalized.split())
 
 
-class CpuBenchmarkDataset:
-    def __init__(
-        self,
-        benchmarks: dict[str, CpuBenchmark],
-        *,
-        source_name: str,
-    ) -> None:
-        self._benchmarks = benchmarks
-        self._source_name = source_name
+def cpu_name_similarity(left: str, right: str) -> float:
+    """Возвращает коэффициент сходства нормализованных названий от 0 до 1."""
+    if not left or not right:
+        return 0.0
 
-    @classmethod
-    def from_csv(cls, path: str | Path) -> "CpuBenchmarkDataset":
-        source = Path(path)
-        aliases: dict[str, list[CpuBenchmark]] = {}
+    normal_ratio = SequenceMatcher(None, left, right).ratio()
+    compact_ratio = SequenceMatcher(
+        None,
+        left.replace(" ", ""),
+        right.replace(" ", ""),
+    ).ratio()
+    return max(normal_ratio, compact_ratio)
 
-        with source.open("r", encoding="utf-8-sig", newline="") as file:
-            reader = csv.DictReader(file)
-            required = {"cpuName", "cpuMark"}
-            if not required.issubset(reader.fieldnames or []):
-                raise ValueError(
-                    f"{source}: нужны колонки cpuName и cpuMark"
-                )
 
-            for row in reader:
-                name = (row.get("cpuName") or "").strip()
-                raw_points = (row.get("cpuMark") or "").strip()
-                if not name or not raw_points:
-                    continue
+def load_cpu_benchmark(csv_path: str | Path) -> list[BenchmarkRow]:
+    """Загружает CSV и заранее нормализует cpuName для быстрого fuzzy search."""
+    path = Path(csv_path)
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        if not reader.fieldnames or "cpuName" not in reader.fieldnames:
+            raise ValueError(f"{path}: отсутствует колонка cpuName")
+        if "cpuMark" not in reader.fieldnames:
+            raise ValueError(f"{path}: отсутствует колонка cpuMark")
 
-                try:
-                    benchmark = CpuBenchmark(name=name, points=int(float(raw_points)))
-                except ValueError:
-                    logger.warning(
-                        "Пропущен некорректный cpuMark для %r: %r",
-                        name,
-                        raw_points,
-                    )
-                    continue
+        rows: list[BenchmarkRow] = []
+        for source_row in reader:
+            cpu_name = str(source_row.get("cpuName") or "").strip()
+            if not cpu_name:
+                continue
 
-                for alias in _cpu_aliases(name):
-                    aliases.setdefault(alias, []).append(benchmark)
+            row: BenchmarkRow = dict(source_row)
+            row["_normalized_cpu_name"] = normalize_cpu_name(cpu_name)
+            rows.append(row)
 
-        # Не используем неоднозначные алиасы: например одинаковую модель
-        # с разной частотой или количеством ядер.
-        unique = {
-            alias: items[0]
-            for alias, items in aliases.items()
-            if len({(item.name, item.points) for item in items}) == 1
-        }
-        logger.info(
-            "Загружено CPU benchmark-записей: %s",
-            len(unique),
-        )
-        return cls(unique, source_name=source.name)
+    return rows
 
-    def find(self, cpu_model: str | None) -> CpuBenchmark | None:
-        if not cpu_model:
-            return None
 
-        for alias in _cpu_aliases(cpu_model):
-            benchmark = self._benchmarks.get(alias)
-            if benchmark is not None:
-                return benchmark
+def find_best_cpu_match(
+    cpu_model: str | None,
+    benchmark_rows: Iterable[Mapping[str, Any]],
+    *,
+    min_score: float = DEFAULT_FUZZY_THRESHOLD,
+) -> BenchmarkRow | None:
+    """Находит наиболее похожий cpuName после нормализации обоих названий."""
+    if not 0 <= min_score <= 1:
+        raise ValueError("min_score должен быть в диапазоне от 0 до 1")
+
+    normalized_cpu = normalize_cpu_name(cpu_model)
+    if not normalized_cpu:
         return None
 
-    def add_points(
-        self,
-        ads: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        matched = 0
+    query_signature = _model_signature(normalized_cpu)
+    best_row: BenchmarkRow | None = None
+    best_score = -1.0
+    best_length_delta = 10**9
 
-        for ad in ads:
-            item = dict(ad)
-            benchmark = self.find(str(item.get("cpu_model") or ""))
-            if benchmark is not None:
-                item["cpu_benchmark_points"] = benchmark.points
-                item["cpu_benchmark_name"] = benchmark.name
-                item["cpu_benchmark_source"] = self._source_name
-                matched += 1
-            result.append(item)
+    for source_row in benchmark_rows:
+        cpu_name = str(source_row.get("cpuName") or "").strip()
+        if not cpu_name:
+            continue
 
-        logger.info(
-            "Benchmark найден для %s из %s объявлений",
-            matched,
-            len(result),
+        normalized_candidate = str(
+            source_row.get("_normalized_cpu_name")
+            or normalize_cpu_name(cpu_name)
         )
-        return result
+        if not normalized_candidate:
+            continue
+
+        candidate_signature = _model_signature(normalized_candidate)
+        if (
+            query_signature
+            and candidate_signature
+            and query_signature != candidate_signature
+        ):
+            # Не даём fuzzy search спутать, например, 3470 с 3470T/3470S.
+            continue
+
+        score = cpu_name_similarity(normalized_cpu, normalized_candidate)
+        length_delta = abs(len(normalized_cpu) - len(normalized_candidate))
+
+        if score > best_score or (
+            score == best_score and length_delta < best_length_delta
+        ):
+            best_score = score
+            best_length_delta = length_delta
+            best_row = dict(source_row)
+
+    if best_row is None or best_score < min_score:
+        return None
+
+    best_row.pop("_normalized_cpu_name", None)
+    return best_row
 
 
-def _cpu_aliases(value: str) -> tuple[str, ...]:
-    strict = _normalize_cpu_name(value, relaxed=False)
-    relaxed = _normalize_cpu_name(value, relaxed=True)
-    return tuple(dict.fromkeys(alias for alias in (strict, relaxed) if alias))
+def get_cpu_mark(
+    cpu_model: str | None,
+    benchmark_rows: Iterable[Mapping[str, Any]],
+    *,
+    min_score: float = DEFAULT_FUZZY_THRESHOLD,
+) -> int | None:
+    """Возвращает cpuMark для лучшего fuzzy-совпадения."""
+    match = find_best_cpu_match(
+        cpu_model,
+        benchmark_rows,
+        min_score=min_score,
+    )
+    if match is None:
+        return None
+    return _parse_cpu_mark(match.get("cpuMark"))
 
 
-def _normalize_cpu_name(value: str, *, relaxed: bool) -> str:
-    text = unicodedata.normalize("NFKC", value).casefold()
-    text = text.replace("®", "").replace("™", "")
-    text = re.sub(r"\((?:r|tm)\)", " ", text)
-
-    # Частота после @ в PassMark не является частью модели.
-    text = re.sub(
-        r"@\s*\d+(?:[.,]\d+)?\s*(?:ghz|mhz)\b",
-        " ",
-        text,
+def apply_cpu_benchmarks(
+    ads: Sequence[Mapping[str, Any]],
+    benchmark: str | Path | Iterable[Mapping[str, Any]],
+    *,
+    min_score: float = DEFAULT_FUZZY_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """Добавляет cpuMark объявлениям, для которых найдено надёжное совпадение."""
+    rows = (
+        load_cpu_benchmark(benchmark)
+        if isinstance(benchmark, (str, Path))
+        else list(benchmark)
     )
 
-    if relaxed:
-        text = re.sub(r"\b\d+\s*[- ]?(?:core|cores|thread|threads)\b", " ", text)
+    result: list[dict[str, Any]] = []
+    for ad in ads:
+        item = dict(ad)
+        cpu_mark = get_cpu_mark(
+            item.get("cpu_model"),
+            rows,
+            min_score=min_score,
+        )
+        if cpu_mark is not None:
+            item["cpuMark"] = cpu_mark
+        result.append(item)
 
-    tokens = re.findall(r"[a-z0-9]+", text)
-    ignored = set(_VENDOR_AND_GENERIC_WORDS)
-    if relaxed:
-        ignored.update(_RELAXED_WORDS)
+    return result
 
-    return " ".join(token for token in tokens if token not in ignored)
+
+class CpuBenchmarkLookup:
+    """Переиспользуемый индекс CSV для поиска benchmark по названию CPU."""
+
+    def __init__(
+        self,
+        csv_path: str | Path,
+        *,
+        min_score: float = DEFAULT_FUZZY_THRESHOLD,
+    ) -> None:
+        self.min_score = min_score
+        self.rows = load_cpu_benchmark(csv_path)
+
+    def find(self, cpu_model: str | None) -> BenchmarkRow | None:
+        return find_best_cpu_match(
+            cpu_model,
+            self.rows,
+            min_score=self.min_score,
+        )
+
+    def get_cpu_mark(self, cpu_model: str | None) -> int | None:
+        return get_cpu_mark(
+            cpu_model,
+            self.rows,
+            min_score=self.min_score,
+        )
+
+    def enrich_ads(
+        self,
+        ads: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return apply_cpu_benchmarks(
+            ads,
+            self.rows,
+            min_score=self.min_score,
+        )
+
+
+def _model_signature(normalized_name: str) -> str | None:
+    """Извлекает точную модельную часть, чтобы не смешивать суффиксы CPU."""
+    tokens = _MODEL_TOKEN_RE.findall(normalized_name)
+    if not tokens:
+        return None
+
+    last = tokens[-1].casefold()
+    if _VERSION_TOKEN_RE.fullmatch(last) and len(tokens) >= 2:
+        return tokens[-2].casefold() + last
+    return last
+
+
+def _parse_cpu_mark(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(str(value).replace(",", ".")))
+    except (TypeError, ValueError):
+        return None
+
+
+# Совместимые имена для существующего кода.
+find_cpu_benchmark = find_best_cpu_match
+find_cpu_mark = get_cpu_mark
+add_cpu_benchmarks = apply_cpu_benchmarks
+enrich_ads_with_cpu_benchmark = apply_cpu_benchmarks
+CPUBenchmark = CpuBenchmarkLookup
