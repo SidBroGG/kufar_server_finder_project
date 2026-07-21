@@ -3,8 +3,11 @@
 Проект выполняет обработку в независимых этапах:
 
 1. `collect` — собирает объявления;
-2. `analyze` — фильтрует рабочие устройства и при необходимости извлекает только явно написанные характеристики;
-3. `vision` — отдельно анализирует фотографии, заполняет отсутствующие и уточняет неполные характеристики.
+2. `analyze` — фильтрует рабочие устройства и извлекает характеристики из текста;
+3. `vision` — анализирует фотографии;
+4. `pipeline` — выполняет все этапы после сбора данных;
+5. `benchmark` — отдельно добавляет CPU Benchmark;
+6. `excel` — отдельно экспортирует JSON в Excel.
 
 ## Установка
 
@@ -62,6 +65,28 @@ python -m kufar_server_finder analyze --input output_unfiltered.json --output ou
 python -m kufar_server_finder vision --input output.json --output output_vision.json
 ```
 
+
+Полный pipeline для уже собранного `output_unfiltered.json`, без обращений к Kufar:
+
+```powershell
+python -m kufar_server_finder pipeline --input output_unfiltered.json --output output.json --excel-output output.xlsx --extract-specs --dataset CPU_benchmark_v4.csv
+```
+
+Команда выполняет `analyze → vision → benchmark → сохранение JSON → Excel`.
+Если `--dataset` не передан, этап benchmark пропускается.
+
+Отдельное добавление benchmark в готовый JSON:
+
+```powershell
+python -m kufar_server_finder benchmark --input output_vision.json --output output_benchmark.json --dataset CPU_benchmark_v4.csv
+```
+
+Отдельный экспорт JSON в Excel:
+
+```powershell
+python -m kufar_server_finder excel --input output.json --output output.xlsx
+```
+
 Фото-анализ не перезаписывает уже точные текстовые данные. Неполные значения вроде `Intel Atom` могут быть заменены точной моделью, только если маркировка на фото читается с `confidence: "high"`. Значения с фото получают поля:
 
 - `cpu_model_source: "image_guess"`;
@@ -99,10 +124,11 @@ pytest
 
 ## Экспорт в Excel
 
-Команда `run` автоматически создаёт Excel-файл из итогового JSON:
+Команды `run` и `pipeline` автоматически создают Excel-файл. Для отдельного
+экспорта используется команда `excel`:
 
 ```powershell
-python -m kufar_server_finder run --computers-only --max-price 20 --output output.json --excel-output output.xlsx --extract-specs --dataset CPU_benchmark_v4.csv
+python -m kufar_server_finder excel --input output.json --output output.xlsx
 ```
 
 В Excel попадают тип устройства, цена, ОЗУ, сокет, процессор, CPU Benchmark,

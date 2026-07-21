@@ -39,6 +39,35 @@ def build_parser() -> argparse.ArgumentParser:
     vision.add_argument("--input", default="output.json")
     vision.add_argument("--output", default="output_vision.json")
 
+    pipeline = subparsers.add_parser(
+        "pipeline",
+        help="Полностью обработать уже собранный JSON без запросов к Kufar",
+    )
+    pipeline.add_argument("--input", default="output_unfiltered.json")
+    pipeline.add_argument("--output", default="output.json")
+    pipeline.add_argument(
+        "--excel-output",
+        default="output.xlsx",
+        help="Excel-файл, создаваемый из итогового JSON",
+    )
+    _add_extract_specs_argument(pipeline)
+    _add_dataset_argument(pipeline)
+
+    benchmark = subparsers.add_parser(
+        "benchmark",
+        help="Добавить CPU Benchmark в готовый JSON",
+    )
+    benchmark.add_argument("--input", default="output_vision.json")
+    benchmark.add_argument("--output", default="output_benchmark.json")
+    _add_dataset_argument(benchmark, required=True)
+
+    excel = subparsers.add_parser(
+        "excel",
+        help="Экспортировать готовый JSON в Excel",
+    )
+    excel.add_argument("--input", default="output.json")
+    excel.add_argument("--output", default="output.xlsx")
+
     run = subparsers.add_parser("run", help="Собрать объявления и сразу обработать")
     _add_collect_arguments(run)
     run.add_argument("--raw-output", default="output_unfiltered.json")
@@ -66,10 +95,15 @@ def _add_extract_specs_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_dataset_argument(parser: argparse.ArgumentParser) -> None:
+def _add_dataset_argument(
+    parser: argparse.ArgumentParser,
+    *,
+    required: bool = False,
+) -> None:
     parser.add_argument(
         "--dataset",
         default=None,
+        required=required,
         help="CSV-датасет CPU Benchmark для добавления cpu_mark",
     )
 
@@ -116,6 +150,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _vision(ads)
             save_ads(args.output, result)
             logger.info("Результат фото-анализа сохранён: %s", args.output)
+            return 0
+
+        if args.command == "pipeline":
+            ads = load_ads(args.input)
+            result = _analyze(ads, extract_specs=args.extract_specs)
+            result = _vision(result)
+            result = _apply_benchmark(result, args.dataset)
+            save_ads(args.output, result)
+            export_ads_json_to_excel(args.output, args.excel_output)
+            logger.info(
+                "Pipeline завершён: итог %s; Excel %s",
+                args.output,
+                args.excel_output,
+            )
+            return 0
+
+        if args.command == "benchmark":
+            ads = load_ads(args.input)
+            result = _apply_benchmark(ads, args.dataset)
+            save_ads(args.output, result)
+            logger.info("JSON с benchmark сохранён: %s", args.output)
+            return 0
+
+        if args.command == "excel":
+            export_ads_json_to_excel(args.input, args.output)
+            logger.info("Excel сохранён: %s", args.output)
             return 0
 
         if args.command == "run":
