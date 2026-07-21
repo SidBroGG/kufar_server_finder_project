@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from .models import AdAnalysis, PCComponentSpec, VisionComponentSpec
 from .socket_inference import infer_socket_from_cpu
+from .visual_refinement import should_replace_with_vision
 
 logger = logging.getLogger(__name__)
 
@@ -404,10 +405,26 @@ class AdPipeline:
         value: Any,
         confidence: str | None,
     ) -> None:
-        if ad.get(field) not in (None, "") or value is None:
+        if not should_replace_with_vision(ad, field, value, confidence):
             return
+
+        value_changed = ad.get(field) != value
         ad[field] = value
         ad[f"{field}_source"] = "image_guess"
         if confidence is not None:
             ad[f"{field}_confidence"] = confidence
 
+        if field == "cpu_model" and value_changed:
+            # Старый benchmark и вычисленный по старой модели сокет становятся
+            # недостоверными после уточнения CPU по фотографии.
+            ad.pop("cpu_mark", None)
+            ad.pop("cpu_benchmark_name", None)
+            ad.pop("cpu_benchmark_source", None)
+            socket_source = ad.get("cpu_socket_source")
+            socket_confidence = ad.get("cpu_socket_confidence")
+            if socket_source in {"cpu_model_guess", "visual_fallback"} or (
+                socket_source == "image_guess" and socket_confidence == "low"
+            ):
+                ad.pop("cpu_socket", None)
+                ad.pop("cpu_socket_source", None)
+                ad.pop("cpu_socket_confidence", None)

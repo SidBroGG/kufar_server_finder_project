@@ -17,6 +17,7 @@ from .prompts import (
     SPECS_SYSTEM_INSTRUCTION,
     VISION_SPECS_SYSTEM_INSTRUCTION,
 )
+from .visual_refinement import fields_needing_visual_analysis
 
 logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -90,11 +91,11 @@ class GeminiAnalyzer:
         self, ads: list[dict[str, Any]]
     ) -> list[VisionComponentSpec]:
         results: list[VisionComponentSpec] = []
-        candidates = [ad for ad in ads if self._missing_spec_fields(ad)]
+        candidates = [ad for ad in ads if fields_needing_visual_analysis(ad)]
         total = len(candidates)
 
         for index, ad in enumerate(candidates, start=1):
-            missing_fields = self._missing_spec_fields(ad)
+            requested_fields = fields_needing_visual_analysis(ad)
             image_parts = self._download_image_parts(ad)
             if not image_parts:
                 logger.info(
@@ -107,7 +108,10 @@ class GeminiAnalyzer:
             prompt = json.dumps(
                 {
                     "link": ad.get("link"),
-                    "missing_fields": missing_fields,
+                    "fields_to_analyze": requested_fields,
+                    "existing_values": {
+                        field: ad.get(field) for field in requested_fields
+                    },
                 },
                 ensure_ascii=False,
             )
@@ -316,21 +320,6 @@ class GeminiAnalyzer:
                 logger.warning("Не удалось загрузить фото %s: %s", url, exc)
 
         return parts
-
-    @staticmethod
-    def _missing_spec_fields(ad: dict[str, Any]) -> list[str]:
-        return [
-            field
-            for field in (
-                "cpu_model",
-                "cpu_socket",
-                "ram_type",
-                "ram_gb",
-                "product_type",
-                "estimated_system_power_w",
-            )
-            if ad.get(field) in (None, "")
-        ]
 
     def _analysis_payload(self, ad: dict[str, Any]) -> dict[str, Any]:
         return {

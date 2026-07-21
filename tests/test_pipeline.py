@@ -296,3 +296,77 @@ def test_vision_adds_missing_confidence_without_overwriting_values():
     assert ad["cpu_socket_confidence"] == "high"
     assert ad["product_type_confidence"] == "low"
     assert ad["estimated_system_power_w_confidence"] == "low"
+
+
+def test_vision_refines_incomplete_text_cpu_from_clear_photo():
+    class ExactCpuVisionAnalyzer(FakeAnalyzer):
+        def infer_specs_from_images(self, ads):
+            return [
+                VisionComponentSpec(
+                    link="https://example/working",
+                    cpu_model="Intel Atom N570",
+                    cpu_model_confidence="high",
+                )
+            ]
+
+    source = [
+        {
+            "link": "https://example/working",
+            "cpu_model": "Intel Atom",
+            "cpu_model_source": "text_exact",
+            "cpu_mark": 1349,
+            "cpu_benchmark_name": "Intel Atom x7-Z8750 @ 1.60GHz",
+            "cpu_benchmark_source": "dataset",
+            "ram_type": "DDR3",
+            "ram_type_source": "text_exact",
+            "ram_gb": 2,
+            "ram_gb_source": "text_exact",
+            "cpu_socket": "BGA (soldered)",
+            "cpu_socket_source": "description_guess",
+            "cpu_socket_confidence": "medium",
+            "product_type": "laptop",
+            "product_type_source": "image_guess",
+            "product_type_confidence": "high",
+            "estimated_system_power_w": 40,
+            "estimated_system_power_w_source": "image_guess",
+            "estimated_system_power_w_confidence": "medium",
+        }
+    ]
+
+    result = AdPipeline(ExactCpuVisionAnalyzer()).enrich_missing_specs_from_images(
+        source
+    )
+    ad = result[0]
+
+    assert ad["cpu_model"] == "Intel Atom N570"
+    assert ad["cpu_model_source"] == "image_guess"
+    assert ad["cpu_model_confidence"] == "high"
+    assert "cpu_mark" not in ad
+    assert "cpu_benchmark_name" not in ad
+    assert "cpu_benchmark_source" not in ad
+
+
+def test_vision_does_not_replace_complete_text_cpu_even_with_high_confidence():
+    class DifferentCpuVisionAnalyzer(FakeAnalyzer):
+        def infer_specs_from_images(self, ads):
+            return [
+                VisionComponentSpec(
+                    link="https://example/working",
+                    cpu_model="Intel Core i7-3770",
+                    cpu_model_confidence="high",
+                )
+            ]
+
+    source = [
+        {
+            "link": "https://example/working",
+            "cpu_model": "Intel Core i5-3470",
+            "cpu_model_source": "text_exact",
+        }
+    ]
+    result = AdPipeline(DifferentCpuVisionAnalyzer()).enrich_missing_specs_from_images(
+        source
+    )
+
+    assert result[0]["cpu_model"] == "Intel Core i5-3470"
+    assert result[0]["cpu_model_source"] == "text_exact"
