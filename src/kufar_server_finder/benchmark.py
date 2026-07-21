@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -12,6 +13,26 @@ _FREQUENCY_SUFFIX_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+_TOKEN_REPLACEMENTS = {
+    "athlone": "athlon",
+    "athlonne": "athlon",
+    "atlon": "athlon",
+    "celeronr": "celeron",
+    "pentiumr": "pentium",
+}
+_GENERIC_TOKENS = {
+    "cpu",
+    "processor",
+    "dual",
+    "quad",
+    "core",
+    "cores",
+}
+_OPTIONAL_TOKENS = {"amd", "intel", "ii"}
+_TOPOLOGY_MODEL_TOKENS = {"x2", "x3", "x4", "x6", "x8", "x12", "x16"}
+_MIN_FUZZY_SCORE = 0.74
+_MIN_SCORE_MARGIN = 0.035
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +50,16 @@ class CpuBenchmarkEntry:
         return self.cpu_mark
 
 
+@dataclass(frozen=True, slots=True)
+class _IndexedEntry:
+    normalized_name: str
+    tokens: frozenset[str]
+    anchor_tokens: frozenset[str]
+    entry: CpuBenchmarkEntry
+
+
 class CpuBenchmarkDataset:
-    """Индекс CPU Benchmark с совместимым API для CLI и тестов."""
+    """Индекс CPU Benchmark с устойчивым поиском по неточным названиям."""
 
     def __init__(
         self,
@@ -43,10 +72,25 @@ class CpuBenchmarkDataset:
 
         self.entries = tuple(entries)
         self._by_normalized_name: dict[str, CpuBenchmarkEntry] = {}
+        self._indexed_entries: list[_IndexedEntry] = []
+        self._by_anchor_token: dict[str, list[_IndexedEntry]] = {}
+
         for entry in self.entries:
             normalized = self.normalize_cpu_name(entry.cpu_name)
-            if normalized:
-                self._by_normalized_name.setdefault(normalized, entry)
+            if not normalized:
+                continue
+
+            self._by_normalized_name.setdefault(normalized, entry)
+            tokens = frozenset(normalized.split())
+            indexed = _IndexedEntry(
+                normalized_name=normalized,
+                tokens=tokens,
+                anchor_tokens=frozenset(_anchor_tokens(tokens)),
+                entry=entry,
+            )
+            self._indexed_entries.append(indexed)
+            for token in indexed.anchor_tokens:
+                self._by_anchor_token.setdefault(token, []).append(indexed)
 
     @classmethod
     def from_csv(cls, path: str | Path) -> CpuBenchmarkDataset:
@@ -65,7 +109,14 @@ class CpuBenchmarkDataset:
             .replace("(r)", " ")
             .replace("(tm)", " ")
         )
-        return _NON_ALNUM_RE.sub(" ", text).strip()
+        # Частые варианты слитного написания из объявлений и датасетов.
+        text = re.sub(r"\bcore\s*2\b", "core 2", text)
+        text = re.sub(r"\bdual\s*core\b", "dual core", text)
+        text = re.sub(r"\bquad\s*core\b", "quad core", text)
+        text = _NON_ALNUM_RE.sub(" ", text).strip()
+
+        tokens = [_TOKEN_REPLACEMENTS.get(token, token) for token in text.split()]
+        return " ".join(tokens)
 
     def find(self, cpu_model: str | None) -> CpuBenchmarkEntry | None:
         if not cpu_model:
@@ -79,19 +130,41 @@ class CpuBenchmarkDataset:
         if exact is not None:
             return exact
 
-        # Разрешаем только достаточно длинное вхождение, чтобы не спутать,
-        # например, i5-3470 и i5-3470T.
-        candidates: list[tuple[int, CpuBenchmarkEntry]] = []
-        for dataset_name, entry in self._by_normalized_name.items():
-            if len(dataset_name) < 6:
-                continue
-            if dataset_name in normalized or normalized in dataset_name:
-                candidates.append((len(dataset_name), entry))
-
+        query_tokens = frozenset(normalized.split())
+        query_anchors = frozenset(_anchor_tokens(query_tokens))
+        candidates = self._candidate_entries(query_anchors)
         if not candidates:
             return None
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
+
+        ranked: list[tuple[float, int, _IndexedEntry]] = []
+        for candidate in candidates:
+            # Номер/суффикс модели обязан совпасть точно. Поэтому 3470 не
+            # сопоставляется с 3470T, а Q6600 — с Q6700.
+            if query_anchors and not query_anchors.issubset(candidate.anchor_tokens):
+                continue
+
+            score = _similarity_score(
+                normalized,
+                query_tokens,
+                candidate.normalized_name,
+                candidate.tokens,
+            )
+            ranked.append((score, len(candidate.normalized_name), candidate))
+
+        if not ranked:
+            return None
+
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        best_score, _, best = ranked[0]
+        if best_score < _MIN_FUZZY_SCORE:
+            return None
+
+        if len(ranked) > 1:
+            second_score = ranked[1][0]
+            if best_score - second_score < _MIN_SCORE_MARGIN:
+                return None
+
+        return best.entry
 
     lookup = find
     match = find
@@ -122,6 +195,21 @@ class CpuBenchmarkDataset:
     enrich = enrich_ads
     apply_to_ads = enrich_ads
 
+    def _candidate_entries(
+        self,
+        query_anchors: frozenset[str],
+    ) -> list[_IndexedEntry]:
+        if not query_anchors:
+            return self._indexed_entries
+
+        groups = [self._by_anchor_token.get(token, []) for token in query_anchors]
+        if any(not group for group in groups):
+            return []
+
+        # Начинаем с самого редкого номера модели для быстрого сужения датасета.
+        smallest = min(groups, key=len)
+        return list(smallest)
+
     @staticmethod
     def _read_csv(path: Path) -> list[CpuBenchmarkEntry]:
         try:
@@ -140,7 +228,7 @@ class CpuBenchmarkDataset:
                 raise ValueError(f"{path}: отсутствуют столбцы: {names}")
 
             entries: list[CpuBenchmarkEntry] = []
-            for line_number, row in enumerate(reader, start=2):
+            for row in reader:
                 name = str(row.get("cpuName") or "").strip()
                 mark = _parse_number(row.get("cpuMark"))
                 if not name or mark is None:
@@ -156,6 +244,51 @@ class CpuBenchmarkDataset:
         if not entries:
             raise ValueError(f"{path}: не найдено ни одной строки с cpuName/cpuMark")
         return entries
+
+
+def _anchor_tokens(tokens: Iterable[str]) -> set[str]:
+    result: set[str] = set()
+    for token in tokens:
+        if token in _TOPOLOGY_MODEL_TOKENS:
+            continue
+        digit_count = sum(character.isdigit() for character in token)
+        if digit_count >= 3:
+            result.add(token)
+    return result
+
+
+def _token_weight(token: str) -> float:
+    if token in _GENERIC_TOKENS:
+        return 0.35
+    if token in _OPTIONAL_TOKENS:
+        return 0.5
+    if token in _TOPOLOGY_MODEL_TOKENS:
+        return 1.5
+    if sum(character.isdigit() for character in token) >= 3:
+        return 5.0
+    if any(character.isdigit() for character in token):
+        return 2.5
+    return 1.5
+
+
+def _similarity_score(
+    query_name: str,
+    query_tokens: frozenset[str],
+    candidate_name: str,
+    candidate_tokens: frozenset[str],
+) -> float:
+    shared = query_tokens.intersection(candidate_tokens)
+    shared_weight = sum(_token_weight(token) for token in shared)
+    query_weight = sum(_token_weight(token) for token in query_tokens)
+    candidate_weight = sum(_token_weight(token) for token in candidate_tokens)
+
+    if not query_weight or not candidate_weight:
+        return 0.0
+
+    query_containment = shared_weight / query_weight
+    dice = (2.0 * shared_weight) / (query_weight + candidate_weight)
+    sequence = SequenceMatcher(None, query_name, candidate_name).ratio()
+    return 0.52 * query_containment + 0.35 * dice + 0.13 * sequence
 
 
 def _parse_number(value: Any) -> float | None:

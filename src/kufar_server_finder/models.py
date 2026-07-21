@@ -40,6 +40,11 @@ class PCComponentSpec(_StrictResponseModel):
     cpu_socket_confidence: Confidence | None = None
 
 
+class CpuNameNormalization(_StrictResponseModel):
+    link: str
+    normalized_cpu_model: str | None = None
+
+
 class VisionComponentSpec(_StrictResponseModel):
     link: str
     cpu_model: str | None = None

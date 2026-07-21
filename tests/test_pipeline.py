@@ -1,5 +1,6 @@
 from kufar_server_finder.models import (
     AdAnalysis,
+    CpuNameNormalization,
     PCComponentSpec,
     VisionComponentSpec,
 )
@@ -370,3 +371,54 @@ def test_vision_does_not_replace_complete_text_cpu_even_with_high_confidence():
 
     assert result[0]["cpu_model"] == "Intel Core i5-3470"
     assert result[0]["cpu_model_source"] == "text_exact"
+
+def test_cpu_name_is_normalized_before_benchmark_without_changing_model_number():
+    class NormalizingAnalyzer(FakeAnalyzer):
+        def normalize_cpu_names(self, ads):
+            return [
+                CpuNameNormalization(
+                    link="https://example/working",
+                    normalized_cpu_model="AMD Athlon II X4 640",
+                )
+            ]
+
+    source = [
+        {
+            "link": "https://example/working",
+            "cpu_model": "athlone x4 640",
+            "cpu_model_source": "text_exact",
+        }
+    ]
+    result = AdPipeline(NormalizingAnalyzer()).normalize_cpu_models_for_benchmark(
+        source
+    )
+
+    assert result[0]["cpu_model"] == "AMD Athlon II X4 640"
+    assert result[0]["cpu_model_original"] == "athlone x4 640"
+    assert result[0]["cpu_model_normalization_source"] == "gemini"
+    assert source[0]["cpu_model"] == "athlone x4 640"
+
+
+def test_cpu_name_normalization_rejects_changed_model_number():
+    class UnsafeNormalizer(FakeAnalyzer):
+        def normalize_cpu_names(self, ads):
+            return [
+                CpuNameNormalization(
+                    link="https://example/working",
+                    normalized_cpu_model="Intel Core 2 Quad Q6700",
+                )
+            ]
+
+    source = [
+        {
+            "link": "https://example/working",
+            "cpu_model": "Intel core 2 quad q6600",
+        }
+    ]
+    result = AdPipeline(UnsafeNormalizer()).normalize_cpu_models_for_benchmark(
+        source
+    )
+
+    assert result[0]["cpu_model"] == "Intel core 2 quad q6600"
+    assert "cpu_model_normalized" not in result[0]
+

@@ -11,9 +11,15 @@ from google.genai import types
 from pydantic import BaseModel, TypeAdapter
 
 from .config import GeminiConfig
-from .models import AdAnalysis, PCComponentSpec, VisionComponentSpec
+from .models import (
+    AdAnalysis,
+    CpuNameNormalization,
+    PCComponentSpec,
+    VisionComponentSpec,
+)
 from .prompts import (
     ANALYSIS_SYSTEM_INSTRUCTION,
+    CPU_NAME_NORMALIZATION_SYSTEM_INSTRUCTION,
     SPECS_SYSTEM_INSTRUCTION,
     VISION_SPECS_SYSTEM_INSTRUCTION,
 )
@@ -86,6 +92,26 @@ class GeminiAnalyzer:
     def infer_specs(self, ads: list[dict[str, Any]]) -> list[PCComponentSpec]:
         """Обратная совместимость: теперь метод не делает предположений."""
         return self.extract_explicit_specs(ads)
+
+    def normalize_cpu_names(
+        self,
+        ads: list[dict[str, Any]],
+    ) -> list[CpuNameNormalization]:
+        payload = [
+            {
+                "link": ad.get("link"),
+                "cpu_model": ad.get("cpu_model"),
+            }
+            for ad in ads
+        ]
+        return self._process_chunks(
+            payload=payload,
+            chunk_size=self.config.specs_chunk_size,
+            model=self.config.specs_model,
+            instruction=CPU_NAME_NORMALIZATION_SYSTEM_INSTRUCTION,
+            response_model=CpuNameNormalization,
+            prompt_prefix="Нормализуй названия процессоров перед поиском benchmark",
+        )
 
     def infer_specs_from_images(
         self, ads: list[dict[str, Any]]

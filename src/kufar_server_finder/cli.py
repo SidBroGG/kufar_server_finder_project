@@ -176,8 +176,16 @@ def _vision(ads: list[dict]) -> list[dict]:
 def _apply_benchmark(ads: list[dict], dataset_path: str | None) -> list[dict]:
     if not dataset_path:
         return ads
+
     dataset = CpuBenchmarkDataset.from_csv(dataset_path)
-    result = dataset.enrich_ads(ads)
+    normalized = _build_pipeline().normalize_cpu_models_for_benchmark(ads)
+    normalized_count = sum(
+        1 for ad in normalized if ad.get("cpu_model_normalized") is True
+    )
+    if normalized_count:
+        logger.info("AI нормализовал названия CPU: %s", normalized_count)
+
+    result = dataset.enrich_ads(normalized)
     matched = sum(1 for ad in result if "cpu_mark" in ad)
     logger.info("Benchmark найден для %s из %s объявлений", matched, len(result))
     return result

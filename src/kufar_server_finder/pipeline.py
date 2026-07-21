@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Protocol
 
-from .models import AdAnalysis, PCComponentSpec, VisionComponentSpec
+from .models import (
+    AdAnalysis,
+    CpuNameNormalization,
+    PCComponentSpec,
+    VisionComponentSpec,
+)
 from .socket_inference import infer_socket_from_cpu
 from .visual_refinement import should_replace_with_vision
 
@@ -125,6 +131,11 @@ class AdsAnalyzer(Protocol):
         ads: list[dict[str, Any]],
     ) -> list[VisionComponentSpec]: ...
 
+    def normalize_cpu_names(
+        self,
+        ads: list[dict[str, Any]],
+    ) -> list[CpuNameNormalization]: ...
+
 
 class AdPipeline:
     def __init__(self, analyzer: AdsAnalyzer) -> None:
@@ -206,6 +217,46 @@ class AdPipeline:
             self._merge_vision_specs(result)
             self._infer_sockets_from_cpu_models(result)
             self._fill_missing_vision_estimates(result)
+        return result
+
+    def normalize_cpu_models_for_benchmark(
+        self,
+        ads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Исправляет написание конкретных CPU перед локальным поиском."""
+        result = [dict(ad) for ad in ads]
+        candidates = [ad for ad in result if _needs_cpu_name_normalization(ad)]
+        if not candidates:
+            return result
+
+        normalized_by_link = {
+            item.link: item for item in self.analyzer.normalize_cpu_names(candidates)
+        }
+        for ad in candidates:
+            normalized = normalized_by_link.get(ad.get("link"))
+            if normalized is None:
+                continue
+
+            current = str(ad.get("cpu_model") or "").strip()
+            proposed = str(normalized.normalized_cpu_model or "").strip()
+            if not proposed or proposed.casefold() == current.casefold():
+                continue
+            if not _same_cpu_identity(current, proposed):
+                logger.warning(
+                    "AI-нормализация CPU отклонена из-за изменения модели: %r -> %r",
+                    current,
+                    proposed,
+                )
+                continue
+
+            ad.setdefault("cpu_model_original", current)
+            ad["cpu_model"] = proposed
+            ad["cpu_model_normalization_source"] = "gemini"
+            ad["cpu_model_normalized"] = True
+            ad.pop("cpu_mark", None)
+            ad.pop("cpu_benchmark_name", None)
+            ad.pop("cpu_benchmark_source", None)
+
         return result
 
     def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
@@ -428,3 +479,23 @@ class AdPipeline:
                 ad.pop("cpu_socket", None)
                 ad.pop("cpu_socket_source", None)
                 ad.pop("cpu_socket_confidence", None)
+
+_CPU_ID_TOKEN_RE = re.compile(r"\b[a-z]*\d{3,5}[a-z]*\b", re.IGNORECASE)
+_CPU_APPROXIMATE_MARKERS = ("пример", "семейств", "неизвест", "unknown", "/")
+
+
+def _needs_cpu_name_normalization(ad: dict[str, Any]) -> bool:
+    value = str(ad.get("cpu_model") or "").strip()
+    if not value or not any(character.isdigit() for character in value):
+        return False
+    if ad.get("cpu_model_source") == "visual_fallback":
+        return False
+    lowered = value.casefold()
+    return not any(marker in lowered for marker in _CPU_APPROXIMATE_MARKERS)
+
+
+def _same_cpu_identity(current: str, proposed: str) -> bool:
+    current_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(current)}
+    proposed_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(proposed)}
+    return bool(current_ids) and current_ids == proposed_ids
+
