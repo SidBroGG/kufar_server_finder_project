@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 DEFAULT_ANALYSIS_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_SPECS_MODEL = "gemini-2.5-flash"
-DEFAULT_VISION_MODEL = "gemini-2.5-flash"
+DEFAULT_SPECS_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_VISION_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_CHUNK_SIZE = 30
 DEFAULT_SPECS_CHUNK_SIZE = 25
-DEFAULT_REQUEST_DELAY = 2.0
+DEFAULT_REQUEST_DELAY = 1.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_VISION_MAX_IMAGES = 5
 DEFAULT_IMAGE_TIMEOUT = 20.0
