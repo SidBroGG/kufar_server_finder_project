@@ -14,6 +14,13 @@ DEFAULT_REQUEST_DELAY = 1.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_VISION_MAX_IMAGES = 5
 DEFAULT_IMAGE_TIMEOUT = 20.0
+GEMINI_WORKER_COUNT = 3
+GEMINI_KEYS_PER_WORKER = 3
+GEMINI_API_KEY_COUNT = GEMINI_WORKER_COUNT * GEMINI_KEYS_PER_WORKER
+GEMINI_API_KEY_ENV_NAMES = (
+    "GEMINI_API_KEY",
+    *(f"GEMINI_API_KEY_{index}" for index in range(2, GEMINI_API_KEY_COUNT + 1)),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,25 +42,38 @@ class GeminiConfig:
     def api_keys(self) -> tuple[str, ...]:
         return (self.api_key, *self.backup_api_keys)
 
+    @property
+    def worker_api_key_groups(self) -> tuple[tuple[str, ...], ...]:
+        keys = self.api_keys
+        if len(keys) != GEMINI_API_KEY_COUNT:
+            raise ValueError(
+                "Для трёх Gemini worker требуется ровно 9 API-ключей: "
+                "GEMINI_API_KEY и GEMINI_API_KEY_2 ... GEMINI_API_KEY_9."
+            )
+        if len(set(keys)) != len(keys):
+            raise ValueError("Все 9 Gemini API-ключей должны быть уникальными.")
+
+        return tuple(
+            tuple(keys[start : start + GEMINI_KEYS_PER_WORKER])
+            for start in range(0, GEMINI_API_KEY_COUNT, GEMINI_KEYS_PER_WORKER)
+        )
+
     @classmethod
     def from_env(cls) -> "GeminiConfig":
         load_dotenv()
         api_keys = tuple(
-            dict.fromkeys(
-                key
-                for key in (
-                    os.getenv("GEMINI_API_KEY", "").strip(),
-                    os.getenv("GEMINI_API_KEY_2", "").strip(),
-                    os.getenv("GEMINI_API_KEY_3", "").strip(),
-                )
-                if key
-            )
+            os.getenv(name, "").strip() for name in GEMINI_API_KEY_ENV_NAMES
         )
-        if not api_keys:
+        missing = [
+            name for name, value in zip(GEMINI_API_KEY_ENV_NAMES, api_keys) if not value
+        ]
+        if missing:
             raise ValueError(
-                "Переменная GEMINI_API_KEY не задана. "
-                "Скопируйте .env.example в .env и укажите ключ."
+                "Для трёх Gemini worker задайте все 9 API-ключей. "
+                f"Не заполнены: {', '.join(missing)}."
             )
+        if len(set(api_keys)) != GEMINI_API_KEY_COUNT:
+            raise ValueError("Все 9 Gemini API-ключей должны быть уникальными.")
 
         return cls(
             api_key=api_keys[0],
