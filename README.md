@@ -26,6 +26,57 @@ Copy-Item .env.example .env
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
+## Установка и запуск в Linux
+
+Для Debian, Ubuntu и производных установите Python и модуль виртуальных окружений:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip
+```
+
+Перейдите в каталог проекта, создайте окружение и установите зависимости:
+
+```bash
+cd /путь/к/kufar_server_finder_project
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+cp .env.example .env
+```
+
+Откройте `.env` и укажите API-ключ Gemini:
+
+```bash
+nano .env
+```
+
+```env
+GEMINI_API_KEY=your_gemini_api_key
+```
+
+Запустите полный pipeline:
+
+```bash
+python -m kufar_server_finder run --max-price 50 --raw-output output_unfiltered.json --output output.json --excel-output output.xlsx --dataset CPU_benchmark_v4.csv
+```
+
+Если датасет CPU Benchmark не используется, уберите параметр `--dataset`:
+
+```bash
+python -m kufar_server_finder run --max-price 50 --raw-output output_unfiltered.json --output output.json --excel-output output.xlsx
+```
+
+При следующем входе в терминал сначала активируйте окружение:
+
+```bash
+cd /путь/к/kufar_server_finder_project
+source .venv/bin/activate
+```
+
+Для выхода из виртуального окружения выполните `deactivate`.
+
 ## Настройки `.env`
 
 ### Kufar
@@ -149,6 +200,3 @@ python -m kufar_server_finder excel --input output.json --output output.xlsx
 python -m pip install -e ".[dev]"
 pytest
 ```
-
-
-
