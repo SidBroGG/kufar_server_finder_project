@@ -33,6 +33,7 @@ GEMINI_API_KEY=your_gemini_api_key
 ```env
 KUFAR_REGION=7
 KUFAR_TIMEOUT=20
+KUFAR_PAGE_DELAY=1
 KUFAR_DETAIL_DELAY=1
 KUFAR_DETAIL_WORKERS=3
 KUFAR_DETAIL_RETRIES=3
@@ -40,6 +41,7 @@ KUFAR_DETAIL_RETRIES=3
 
 - `KUFAR_REGION` — идентификатор региона Kufar;
 - `KUFAR_TIMEOUT` — тайм-аут HTTP-запроса в секундах;
+- `KUFAR_PAGE_DELAY` — задержка перед загрузкой следующей страницы категории;
 - `KUFAR_DETAIL_DELAY` — общая задержка между запросами страниц объявлений;
 - `KUFAR_DETAIL_WORKERS` — число параллельных загрузчиков описаний;
 - `KUFAR_DETAIL_RETRIES` — число попыток загрузки описания.
@@ -87,6 +89,10 @@ python -m kufar_server_finder run --max-price 50 --raw-output output_unfiltered.
 сбор категорий -> описания -> AI-фильтрация и характеристики -> фото-анализ -> benchmark -> JSON -> Excel
 ```
 
+Во время `run` программа не ждёт завершения полного сбора. Как только готово
+`GEMINI_CHUNK_SIZE` объявлений, эта пачка передаётся в AI-pipeline параллельно
+с дальнейшим сбором Kufar. Последняя неполная пачка обрабатывается после сбора.
+
 `--dataset` необязателен. Без него этап CPU Benchmark пропускается.
 
 ### Только сбор объявлений
@@ -98,9 +104,8 @@ python -m kufar_server_finder collect --max-price 50 --output output_unfiltered.
 Доступные параметры сбора:
 
 - `--max-price` — максимальная цена в BYN;
-- `--page-delay` — задержка перед загрузкой следующей страницы категории.
 
-Остальные сетевые настройки Kufar задаются только через `.env`.
+Все сетевые настройки Kufar задаются только через `.env`.
 
 ### Анализ собранного JSON
 
@@ -144,3 +149,6 @@ python -m kufar_server_finder excel --input output.json --output output.xlsx
 python -m pip install -e ".[dev]"
 pytest
 ```
+
+
+

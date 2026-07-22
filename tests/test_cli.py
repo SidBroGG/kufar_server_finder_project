@@ -1,4 +1,5 @@
 import argparse
+import threading
 
 import pytest
 
@@ -29,6 +30,7 @@ def test_cli_module_imports_and_parser_builds_without_removed_flags():
         "detail_workers",
         "detail_retries",
         "timeout",
+        "page_delay",
         "extract_specs",
     ):
         assert not hasattr(args, removed)
@@ -45,6 +47,8 @@ def test_cli_module_imports_and_parser_builds_without_removed_flags():
         ["collect", "--detail-workers", "2"],
         ["collect", "--detail-retries", "4"],
         ["collect", "--timeout", "10"],
+        ["collect", "--page-delay", "0"],
+        ["run", "--page-delay", "0"],
         ["analyze", "--extract-specs"],
         ["analyze", "--infer-specs"],
     ],
@@ -62,14 +66,38 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     excel_path = tmp_path / "output.xlsx"
     calls = []
     pipeline_builds = []
-    shared_pipeline = object()
 
+    class FakePipeline:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    shared_pipeline = FakePipeline()
+
+    class FakeGeminiConfig:
+        chunk_size = 2
+
+    class FakeClient:
+        def __init__(self, config):
+            self.closed = False
+
+        def iter_ads(self, **kwargs):
+            assert kwargs == {"max_price": 100.0}
+            yield {"link": "x", "price": 10}
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(cli.GeminiConfig, "from_env", lambda: FakeGeminiConfig())
+    monkeypatch.setattr(cli.KufarConfig, "from_env", lambda: object())
+    monkeypatch.setattr(cli, "KufarClient", FakeClient)
     monkeypatch.setattr(
         cli,
         "_build_pipeline",
-        lambda: pipeline_builds.append(shared_pipeline) or shared_pipeline,
+        lambda config=None: pipeline_builds.append(shared_pipeline) or shared_pipeline,
     )
-    monkeypatch.setattr(cli, "_collect", lambda args: [{"link": "x"}])
     monkeypatch.setattr(
         cli,
         "_analyze",
@@ -78,7 +106,7 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_vision", lambda ads, *, pipeline=None: ads)
     monkeypatch.setattr(
         cli,
-        "_apply_benchmark",
+        "_apply_benchmark_dataset",
         lambda ads, dataset, *, pipeline=None: ads,
     )
     monkeypatch.setattr(
@@ -96,8 +124,6 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
             str(json_path),
             "--excel-output",
             str(excel_path),
-            "--page-delay",
-            "0",
         ]
     )
 
@@ -106,6 +132,66 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     assert raw_path.exists()
     assert json_path.exists()
     assert pipeline_builds == [shared_pipeline]
+    assert shared_pipeline.closed is True
+
+
+def test_run_starts_pipeline_before_kufar_collection_finishes(
+    monkeypatch,
+    tmp_path,
+):
+    from kufar_server_finder import cli
+    from kufar_server_finder.storage import load_ads
+
+    first_batch_started = threading.Event()
+    processed_batches = []
+
+    class FakeGeminiConfig:
+        chunk_size = 2
+
+    class FakeClient:
+        def __init__(self, config):
+            pass
+
+        def iter_ads(self, **kwargs):
+            yield {"link": "1", "price": 3}
+            yield {"link": "2", "price": 2}
+            assert first_batch_started.wait(timeout=2)
+            yield {"link": "3", "price": 1}
+
+        def close(self):
+            pass
+
+    class FakePipeline:
+        def close(self):
+            pass
+
+    def process_batch(ads, *, pipeline, benchmark_dataset):
+        processed_batches.append([ad["link"] for ad in ads])
+        first_batch_started.set()
+        return [{**ad, "processed": True} for ad in ads]
+
+    monkeypatch.setattr(cli.GeminiConfig, "from_env", lambda: FakeGeminiConfig())
+    monkeypatch.setattr(cli.KufarConfig, "from_env", lambda: object())
+    monkeypatch.setattr(cli, "KufarClient", FakeClient)
+    monkeypatch.setattr(cli, "_build_pipeline", lambda config=None: FakePipeline())
+    monkeypatch.setattr(cli, "_process_run_batch", process_batch)
+    monkeypatch.setattr(cli, "export_ads_json_to_excel", lambda *args: None)
+
+    raw_path = tmp_path / "raw.json"
+    output_path = tmp_path / "output.json"
+    args = argparse.Namespace(
+        max_price=100,
+        raw_output=str(raw_path),
+        output=str(output_path),
+        excel_output=str(tmp_path / "output.xlsx"),
+        dataset=None,
+    )
+
+    cli._run_streaming(args)
+
+    assert processed_batches == [["1", "2"], ["3"]]
+    assert [ad["link"] for ad in load_ads(raw_path)] == ["3", "2", "1"]
+    assert all(ad["processed"] for ad in load_ads(output_path))
 
 
 def test_new_commands_parse():
@@ -355,16 +441,17 @@ def test_collect_reads_kufar_settings_from_env_and_uses_categories(monkeypatch):
 
     monkeypatch.setenv("KUFAR_REGION", "5")
     monkeypatch.setenv("KUFAR_TIMEOUT", "9")
+    monkeypatch.setenv("KUFAR_PAGE_DELAY", "0.5")
     monkeypatch.setenv("KUFAR_DETAIL_DELAY", "2")
     monkeypatch.setenv("KUFAR_DETAIL_WORKERS", "2")
     monkeypatch.setenv("KUFAR_DETAIL_RETRIES", "4")
     monkeypatch.setattr(cli, "KufarClient", FakeClient)
-    args = argparse.Namespace(page_delay=-1, max_price=20)
+    args = argparse.Namespace(max_price=20)
 
     assert cli._collect(args) == [{"link": "x"}]
     assert captured["config"].region == "5"
     assert captured["config"].request_timeout == 9
-    assert captured["config"].page_delay == 0
+    assert captured["config"].page_delay == 0.5
     assert captured["config"].detail_delay == 2
     assert captured["config"].detail_workers == 2
     assert captured["config"].detail_max_retries == 4
@@ -483,3 +570,6 @@ def test_apply_benchmark_normalizes_only_unmatched(monkeypatch):
 
     assert [item["link"] for item in normalized_inputs] == ["unmatched"]
     assert [item["cpu_mark"] for item in result] == [10, 10]
+
+
+

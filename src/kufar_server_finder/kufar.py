@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from collections.abc import Iterator
 from typing import Any
 
 import requests
@@ -93,12 +94,22 @@ class KufarClient:
         *,
         max_price: float = 100.0,
     ) -> list[dict[str, Any]]:
+        results = list(self.iter_ads(max_price=max_price))
+        results.sort(key=lambda ad: ad["price"])
+        logger.info("Собрано объявлений: %s", len(results))
+        return results
+
+    def iter_ads(
+        self,
+        *,
+        max_price: float = 100.0,
+    ) -> Iterator[dict[str, Any]]:
+        """Отдаёт объявления по мере завершения загрузки их описаний."""
         categories = [
             self.config.category_computers,
             self.config.category_laptops,
         ]
 
-        results: list[dict[str, Any]] = []
         seen_links: set[str] = set()
 
         for category in categories:
@@ -143,7 +154,7 @@ class KufarClient:
 
                 if page_results:
                     self._load_descriptions(page_results)
-                results.extend(page_results)
+                yield from page_results
 
                 if not page_has_eligible_price:
                     logger.info(
@@ -160,10 +171,6 @@ class KufarClient:
                     break
                 params["cursor"] = cursor
                 page_number += 1
-
-        results.sort(key=lambda ad: ad["price"])
-        logger.info("Собрано объявлений: %s", len(results))
-        return results
 
     def _load_descriptions(self, ads: list[dict[str, Any]]) -> None:
         if self._closed:
@@ -399,5 +406,8 @@ class KufarClient:
             if page.get("label") == "next":
                 return page.get("token") or page.get("cursor")
         return None
+
+
+
 
 

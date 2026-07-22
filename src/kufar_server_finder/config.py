@@ -20,6 +20,7 @@ DEFAULT_IMAGE_DOWNLOAD_WORKERS = 3
 DEFAULT_IMAGE_TIMEOUT = 20.0
 DEFAULT_KUFAR_REGION = "7"
 DEFAULT_KUFAR_REQUEST_TIMEOUT = 20.0
+DEFAULT_KUFAR_PAGE_DELAY = 1.0
 DEFAULT_KUFAR_DETAIL_DELAY = 1.0
 DEFAULT_KUFAR_DETAIL_WORKERS = 3
 DEFAULT_KUFAR_DETAIL_MAX_RETRIES = 3
@@ -122,7 +123,7 @@ class KufarConfig:
     category_laptops: str = "16040"
     page_size: int = 43
     request_timeout: float = DEFAULT_KUFAR_REQUEST_TIMEOUT
-    page_delay: float = 1.0
+    page_delay: float = DEFAULT_KUFAR_PAGE_DELAY
     detail_delay: float = DEFAULT_KUFAR_DETAIL_DELAY
     detail_workers: int = DEFAULT_KUFAR_DETAIL_WORKERS
     detail_max_retries: int = DEFAULT_KUFAR_DETAIL_MAX_RETRIES
@@ -155,6 +156,9 @@ class KufarConfig:
             region=_string("KUFAR_REGION", DEFAULT_KUFAR_REGION),
             request_timeout=_positive_float(
                 "KUFAR_TIMEOUT", DEFAULT_KUFAR_REQUEST_TIMEOUT
+            ),
+            page_delay=_non_negative_float(
+                "KUFAR_PAGE_DELAY", DEFAULT_KUFAR_PAGE_DELAY
             ),
             detail_delay=_non_negative_float(
                 "KUFAR_DETAIL_DELAY", DEFAULT_KUFAR_DETAIL_DELAY
@@ -204,3 +208,6 @@ def _non_negative_float(name: str, default: float) -> float:
     if value < 0:
         raise ValueError(f"{name} не может быть отрицательным")
     return value
+
+
+

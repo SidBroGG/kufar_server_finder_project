@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
-from dataclasses import replace
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from .benchmark import CpuBenchmarkDataset
@@ -97,7 +97,6 @@ def _add_dataset_argument(
 
 def _add_collect_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-price", type=float, default=100.0)
-    parser.add_argument("--page-delay", type=float, default=1.0)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -176,27 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "run":
-            ads = _collect(args)
-            save_ads(args.raw_output, ads)
-            pipeline = _build_pipeline()
-            try:
-                result = _analyze(ads, pipeline=pipeline)
-                result = _vision(result, pipeline=pipeline)
-                result = _apply_benchmark(
-                    result,
-                    args.dataset,
-                    pipeline=pipeline,
-                )
-            finally:
-                _close_pipeline(pipeline)
-            save_ads(args.output, result)
-            export_ads_json_to_excel(args.output, args.excel_output)
-            logger.info(
-                "Сырые данные: %s; итог: %s; Excel: %s",
-                args.raw_output,
-                args.output,
-                args.excel_output,
-            )
+            _run_streaming(args)
             return 0
     except KeyboardInterrupt:
         logger.warning("Операция прервана пользователем")
@@ -212,11 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _collect(args: argparse.Namespace) -> list[dict]:
-    config = replace(
-        KufarConfig.from_env(),
-        page_delay=max(args.page_delay, 0),
-    )
-    client = KufarClient(config)
+    client = KufarClient(KufarConfig.from_env())
     try:
         return client.fetch_ads(max_price=args.max_price)
     finally:
@@ -225,11 +200,98 @@ def _collect(args: argparse.Namespace) -> list[dict]:
             close()
 
 
-def _build_pipeline() -> AdPipeline:
-    config = GeminiConfig.from_env()
+def _build_pipeline(config: GeminiConfig | None = None) -> AdPipeline:
+    active_config = config or GeminiConfig.from_env()
     from .gemini import GeminiAnalyzer
 
-    return AdPipeline(GeminiAnalyzer(config))
+    return AdPipeline(GeminiAnalyzer(active_config))
+
+
+def _run_streaming(args: argparse.Namespace) -> None:
+    pipeline: AdPipeline | None = None
+    client: KufarClient | None = None
+    executor: ThreadPoolExecutor | None = None
+    futures: list[Future[list[dict]]] = []
+    raw_ads: list[dict] = []
+    batch: list[dict] = []
+
+    try:
+        gemini_config = GeminiConfig.from_env()
+        benchmark_dataset = (
+            CpuBenchmarkDataset.from_csv(args.dataset) if args.dataset else None
+        )
+        client = KufarClient(KufarConfig.from_env())
+        pipeline = _build_pipeline(gemini_config)
+        executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="run-pipeline",
+        )
+
+        for ad in client.iter_ads(max_price=args.max_price):
+            raw_ads.append(ad)
+            batch.append(ad)
+            if len(batch) >= gemini_config.chunk_size:
+                futures.append(
+                    executor.submit(
+                        _process_run_batch,
+                        batch,
+                        pipeline=pipeline,
+                        benchmark_dataset=benchmark_dataset,
+                    )
+                )
+                batch = []
+
+        if batch:
+            futures.append(
+                executor.submit(
+                    _process_run_batch,
+                    batch,
+                    pipeline=pipeline,
+                    benchmark_dataset=benchmark_dataset,
+                )
+            )
+
+        raw_ads.sort(key=lambda ad: ad.get("price", float("inf")))
+        save_ads(args.raw_output, raw_ads)
+
+        result: list[dict] = []
+        for future in futures:
+            result.extend(future.result())
+        result.sort(key=lambda ad: ad.get("price", float("inf")))
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=False)
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+        if pipeline is not None:
+            _close_pipeline(pipeline)
+
+    save_ads(args.output, result)
+    export_ads_json_to_excel(args.output, args.excel_output)
+    logger.info(
+        "Сырые данные: %s; итог: %s; Excel: %s",
+        args.raw_output,
+        args.output,
+        args.excel_output,
+    )
+
+
+def _process_run_batch(
+    ads: list[dict],
+    *,
+    pipeline: AdPipeline,
+    benchmark_dataset: CpuBenchmarkDataset | None,
+) -> list[dict]:
+    logger.info("Запущена обработка пачки из %s объявлений", len(ads))
+    result = _analyze(ads, pipeline=pipeline)
+    result = _vision(result, pipeline=pipeline)
+    return _apply_benchmark_dataset(
+        result,
+        benchmark_dataset,
+        pipeline=pipeline,
+    )
 
 
 def _close_pipeline(pipeline: Any) -> None:
@@ -275,7 +337,21 @@ def _apply_benchmark(
     if not dataset_path:
         return ads
 
-    dataset = CpuBenchmarkDataset.from_csv(dataset_path)
+    return _apply_benchmark_dataset(
+        ads,
+        CpuBenchmarkDataset.from_csv(dataset_path),
+        pipeline=pipeline,
+    )
+
+
+def _apply_benchmark_dataset(
+    ads: list[dict],
+    dataset: CpuBenchmarkDataset | None,
+    *,
+    pipeline: AdPipeline | None = None,
+) -> list[dict]:
+    if dataset is None:
+        return ads
 
     # Сначала дешёвый локальный поиск. В Gemini отправляются только несовпавшие CPU.
     initially_enriched = dataset.enrich_ads(ads)
@@ -317,3 +393,6 @@ def _apply_benchmark(
     matched = sum(1 for ad in result if "cpu_mark" in ad)
     logger.info("Benchmark найден для %s из %s объявлений", matched, len(result))
     return result
+
+
+

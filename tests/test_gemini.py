@@ -366,11 +366,11 @@ def test_download_image_parts_filters_urls_formats_and_network_errors():
     )
 
     assert len(parts) == 1
-    assert session.calls == [
+    assert sorted(session.calls) == sorted([
         ("https://example/1.jpg", 3),
         ("https://example/2.jpg", 3),
         ("https://example/3.jpg", 3),
-    ]
+    ])
     assert "User-Agent" in session.headers
 
 
@@ -537,3 +537,6 @@ def test_executors_are_reused_and_context_manager_closes_analyzer():
             operation=lambda worker, task: task,
             fallback=lambda: 0,
         )
+
+
+

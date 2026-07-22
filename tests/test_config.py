@@ -93,6 +93,7 @@ def test_from_env_validates_numeric_options(monkeypatch, name, value, message):
 def test_kufar_from_env_loads_removed_cli_parameters(monkeypatch):
     monkeypatch.setenv("KUFAR_REGION", "5")
     monkeypatch.setenv("KUFAR_TIMEOUT", "12.5")
+    monkeypatch.setenv("KUFAR_PAGE_DELAY", "0.75")
     monkeypatch.setenv("KUFAR_DETAIL_DELAY", "1.5")
     monkeypatch.setenv("KUFAR_DETAIL_WORKERS", "4")
     monkeypatch.setenv("KUFAR_DETAIL_RETRIES", "6")
@@ -101,6 +102,7 @@ def test_kufar_from_env_loads_removed_cli_parameters(monkeypatch):
 
     assert config.region == "5"
     assert config.request_timeout == 12.5
+    assert config.page_delay == 0.75
     assert config.detail_delay == 1.5
     assert config.detail_workers == 4
     assert config.detail_max_retries == 6
@@ -113,6 +115,7 @@ def test_kufar_from_env_uses_defaults(monkeypatch):
     for name in (
         "KUFAR_REGION",
         "KUFAR_TIMEOUT",
+        "KUFAR_PAGE_DELAY",
         "KUFAR_DETAIL_DELAY",
         "KUFAR_DETAIL_WORKERS",
         "KUFAR_DETAIL_RETRIES",
@@ -123,6 +126,7 @@ def test_kufar_from_env_uses_defaults(monkeypatch):
 
     assert config.region == "7"
     assert config.request_timeout == 20
+    assert config.page_delay == 1
     assert config.detail_delay == 1
     assert config.detail_workers == 3
     assert config.detail_max_retries == 3
@@ -133,6 +137,7 @@ def test_kufar_from_env_uses_defaults(monkeypatch):
     [
         ("KUFAR_REGION", "", "не может быть пустым"),
         ("KUFAR_TIMEOUT", "0", "больше нуля"),
+        ("KUFAR_PAGE_DELAY", "-1", "не может быть отрицательным"),
         ("KUFAR_DETAIL_DELAY", "-1", "не может быть отрицательным"),
         ("KUFAR_DETAIL_WORKERS", "0", "больше нуля"),
         ("KUFAR_DETAIL_RETRIES", "0", "больше нуля"),
@@ -167,3 +172,6 @@ def test_direct_config_validates_parallel_chunk_and_kufar_options():
         KufarConfig(rate_limit_threshold=0)
     with pytest.raises(ValueError, match="KUFAR_DETAIL_DELAY"):
         KufarConfig(detail_delay=-1)
+
+
+
