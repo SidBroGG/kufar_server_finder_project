@@ -1,5 +1,8 @@
 from typing import Any
 
+import pytest
+import requests
+
 from kufar_server_finder.config import KufarConfig
 from kufar_server_finder.kufar import KufarClient
 
@@ -20,10 +23,12 @@ def test_zero_missing_and_invalid_prices_are_skipped():
     assert KufarClient._parse_price("bad") is None
 
     client = KufarClient(KufarConfig(page_delay=0, detail_delay=0))
-    assert client._parse_ad(
-        {"ad_link": "https://example/zero", "price_byn": "0"},
-        load_descriptions=False,
-    ) is None
+    try:
+        assert client._parse_ad(
+            {"ad_link": "https://example/zero", "price_byn": "0"}
+        ) is None
+    finally:
+        client.close()
 
 
 class FakeKufarClient(KufarClient):
@@ -40,22 +45,35 @@ class FakeKufarClient(KufarClient):
             "pagination": {"pages": []},
         }
 
+    def _fetch_description(self, link: str) -> str | None:
+        return f"Описание {link}"
+
 
 def test_expensive_ad_does_not_hide_cheaper_ads_below_it():
-    result = FakeKufarClient().fetch_ads(
-        max_price=50,
-        load_descriptions=False,
-    )
-    assert [ad["price"] for ad in result] == [10.0, 20.0]
+    client = FakeKufarClient()
+    try:
+        result = client.fetch_ads(max_price=50)
+    finally:
+        client.close()
 
-def test_search_params_include_server_side_max_price():
+    assert [ad["price"] for ad in result] == [10.0, 20.0]
+    assert all(ad["description_status"] == "loaded" for ad in result)
+
+
+def test_search_params_are_category_only_and_include_max_price():
     client = KufarClient(KufarConfig(page_delay=0, detail_delay=0))
-    params = client._build_search_params(
-        None,
-        "16020",
-        max_price=20,
-    )
-    assert params["prc"] == "r:0,2000"
+    try:
+        params = client._build_search_params("16020", max_price=20)
+        assert params["prc"] == "r:0,2000"
+        assert params["cat"] == "16020"
+        assert "query" not in params
+
+        without_price = client._build_search_params("16040", max_price=None)
+        assert without_price["cat"] == "16040"
+        assert "prc" not in without_price
+        assert client._build_search_params("16020", max_price=-1)["prc"] == "r:0,0"
+    finally:
+        client.close()
 
 
 class DescriptionTrackingClient(KufarClient):
@@ -78,42 +96,61 @@ class DescriptionTrackingClient(KufarClient):
         return "Описание"
 
 
-def test_expensive_ads_do_not_load_description():
+def test_fetch_ads_always_loads_descriptions_only_for_eligible_ads():
     client = DescriptionTrackingClient()
-    result = client.fetch_ads(max_price=20, load_descriptions=True)
+    try:
+        result = client.fetch_ads(max_price=20)
+    finally:
+        client.close()
+
     assert [ad["price"] for ad in result] == [10.0]
     assert client.description_links == ["https://example/10"]
+    assert result[0]["description"] == "Описание"
+
 
 class ExpensivePageStopClient(KufarClient):
     def __init__(self) -> None:
         super().__init__(KufarConfig(page_delay=0, detail_delay=0))
-        self.calls = 0
+        self.requests = []
 
     def _get_json(self, url: str, **kwargs: Any) -> dict[str, Any]:
-        self.calls += 1
-        if self.calls == 1:
+        params = dict(kwargs["params"])
+        self.requests.append(params)
+        category = params["cat"]
+        if "cursor" not in params:
             return {
-                "ads": [{"ad_link": "https://example/10", "price_byn": "1000"}],
-                "pagination": {
-                    "pages": [{"label": "next", "token": "page-2"}]
-                },
+                "ads": [
+                    {
+                        "ad_link": f"https://example/{category}/10",
+                        "price_byn": "1000",
+                    }
+                ],
+                "pagination": {"pages": [{"label": "next", "token": "page-2"}]},
             }
         return {
-            "ads": [{"ad_link": "https://example/100", "price_byn": "10000"}],
-            "pagination": {
-                "pages": [{"label": "next", "token": "page-3"}]
-            },
+            "ads": [
+                {
+                    "ad_link": f"https://example/{category}/100",
+                    "price_byn": "10000",
+                }
+            ],
+            "pagination": {"pages": [{"label": "next", "token": "page-3"}]},
         }
 
+    def _fetch_description(self, link: str) -> str | None:
+        return "Описание"
 
-def test_pagination_stops_on_first_fully_expensive_page():
+
+def test_pagination_stops_on_first_fully_expensive_page_for_each_category():
     client = ExpensivePageStopClient()
-    result = client.fetch_ads(max_price=20, load_descriptions=False)
-    assert [ad["price"] for ad in result] == [10.0]
-    assert client.calls == 2
+    try:
+        result = client.fetch_ads(max_price=20)
+    finally:
+        client.close()
 
-import requests
-import pytest
+    assert [ad["price"] for ad in result] == [10.0, 10.0]
+    assert len(client.requests) == 4
+    assert {request["cat"] for request in client.requests} == {"16020", "16040"}
 
 
 class FakeResponse:
@@ -145,26 +182,32 @@ class FakeSession:
         self.responses = list(responses)
         self.calls = []
         self.headers = {}
+        self.closed = False
 
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return self.responses.pop(0)
 
+    def close(self):
+        self.closed = True
 
-def test_default_init_and_search_params_variants():
+
+def test_default_init_and_category_search_params():
     session = FakeSession([])
     client = KufarClient(session=session)
-    assert client.config.region == "7"
-    assert session.headers["Accept"] == "application/json"
+    try:
+        assert client.config.region == "7"
+        assert session.headers["Accept"] == "application/json"
+        params = client._build_search_params("16020", max_price=None)
+        assert params["cat"] == "16020"
+        assert "query" not in params
+    finally:
+        client.close()
 
-    params = client._build_search_params("server", "16020", max_price=None)
-    assert params["query"] == "server"
-    assert params["cat"] == "16020"
-    assert "prc" not in params
-    assert client._build_search_params(None, None, max_price=-1)["prc"] == "r:0,0"
+    assert session.closed is False  # переданная сессия принадлежит вызывающему коду
 
 
-def test_parse_ad_builds_characteristics_images_and_description_statuses(monkeypatch):
+def test_parse_ad_builds_characteristics_images_and_initial_status():
     client = KufarClient(KufarConfig(page_delay=0, detail_delay=0))
     raw = {
         "ad_link": "https://example/item",
@@ -178,26 +221,29 @@ def test_parse_ad_builds_characteristics_images_and_description_statuses(monkeyp
         "images": [{"path": "a.jpg"}, {"path": ""}],
     }
 
-    monkeypatch.setattr(client, "_fetch_description", lambda link: "Описание")
-    loaded = client._parse_ad(raw, load_descriptions=True)
-    assert loaded["description_status"] == "loaded"
-    assert loaded["description"] == "Описание"
-    assert loaded["characteristics"] == {"ОЗУ": "8 ГБ"}
-    assert loaded["images"] == [f"{client.IMAGE_BASE_URL}/a.jpg"]
+    try:
+        parsed = client._parse_ad(raw)
+        assert parsed["description_status"] == "not_requested"
+        assert parsed["description"] == ""
+        assert parsed["characteristics"] == {"ОЗУ": "8 ГБ"}
+        assert parsed["images"] == [f"{client.IMAGE_BASE_URL}/a.jpg"]
+        assert client._parse_ad({**raw, "subject": ""})["title"] == "Без названия"
+        assert client._parse_ad({"price_byn": "100"}) is None
+    finally:
+        client.close()
 
-    monkeypatch.setattr(client, "_fetch_description", lambda link: "")
-    missing = client._parse_ad({**raw, "subject": ""}, load_descriptions=True)
-    assert missing["title"] == "Без названия"
-    assert missing["description_status"] == "missing"
 
-    monkeypatch.setattr(client, "_fetch_description", lambda link: None)
-    failed = client._parse_ad(raw, load_descriptions=True)
-    assert failed["description_status"] == "load_error"
-    assert failed["description_load_error"] is True
+def test_apply_description_result_covers_loaded_missing_and_error():
+    ad = {"description_load_error": True}
+    KufarClient._apply_description_result(ad, "Описание")
+    assert ad == {"description": "Описание", "description_status": "loaded"}
 
-    not_requested = client._parse_ad(raw, load_descriptions=False)
-    assert not_requested["description_status"] == "not_requested"
-    assert client._parse_ad({"price_byn": "100"}, load_descriptions=False) is None
+    KufarClient._apply_description_result(ad, "")
+    assert ad == {"description": "", "description_status": "missing"}
+
+    KufarClient._apply_description_result(ad, None)
+    assert ad["description_status"] == "load_error"
+    assert ad["description_load_error"] is True
 
 
 def test_get_json_and_fetch_description(monkeypatch):
@@ -216,16 +262,20 @@ def test_get_json_and_fetch_description(monkeypatch):
         KufarConfig(page_delay=0, detail_delay=0, request_timeout=7),
         session=session,
     )
+    monkeypatch.setattr("kufar_server_finder.kufar.time.sleep", lambda value: None)
 
-    assert client._get_json("https://api") == {"ads": []}
-    with pytest.raises(ValueError, match="неожиданного формата"):
-        client._get_json("https://api")
-    assert client._fetch_description("https://item/1") == "A\nB"
-    assert client._fetch_description("https://item/2") == ""
-    assert client._fetch_description("https://item/3") is None
+    try:
+        assert client._get_json("https://api") == {"ads": []}
+        with pytest.raises(ValueError, match="неожиданного формата"):
+            client._get_json("https://api")
+        assert client._fetch_description("https://item/1") == "A\nB"
+        assert client._fetch_description("https://item/2") == ""
+        assert client._fetch_description("https://item/3") is None
+    finally:
+        client.close()
 
 
-def test_fetch_ads_computers_categories_deduplicates_and_uses_cursor(monkeypatch):
+def test_fetch_ads_uses_both_categories_deduplicates_and_uses_cursor():
     class MultiCategoryClient(KufarClient):
         def __init__(self):
             super().__init__(KufarConfig(page_delay=0, detail_delay=0))
@@ -234,7 +284,7 @@ def test_fetch_ads_computers_categories_deduplicates_and_uses_cursor(monkeypatch
         def _get_json(self, url, **kwargs):
             params = dict(kwargs["params"])
             self.requests.append(params)
-            category = params.get("cat")
+            category = params["cat"]
             if "cursor" not in params:
                 return {
                     "ads": [
@@ -247,17 +297,19 @@ def test_fetch_ads_computers_categories_deduplicates_and_uses_cursor(monkeypatch
                 }
             return {"ads": [], "pagination": {"pages": []}}
 
+        def _fetch_description(self, link):
+            return "Описание"
+
     client = MultiCategoryClient()
-    result = client.fetch_ads(
-        query="pc",
-        computers_only=True,
-        max_price=20,
-        load_descriptions=False,
-    )
+    try:
+        result = client.fetch_ads(max_price=20)
+    finally:
+        client.close()
 
     assert len(result) == 1
     assert {request["cat"] for request in client.requests} == {"16020", "16040"}
     assert sum("cursor" in request for request in client.requests) == 2
+    assert all("query" not in request for request in client.requests)
 
 
 def test_price_and_cursor_edge_cases():
@@ -285,6 +337,9 @@ def test_descriptions_are_loaded_in_parallel():
             self.thread_names = []
 
         def _get_json(self, url, **kwargs):
+            category = kwargs["params"]["cat"]
+            if category == "16040":
+                return {"ads": [], "pagination": {"pages": []}}
             return {
                 "ads": [
                     {
@@ -304,7 +359,7 @@ def test_descriptions_are_loaded_in_parallel():
     client = ParallelDescriptionClient()
     executor_id = id(client._detail_executor)
     try:
-        result = client.fetch_ads(max_price=10, load_descriptions=True)
+        result = client.fetch_ads(max_price=10)
     finally:
         client.close()
 
@@ -317,6 +372,28 @@ def test_descriptions_are_loaded_in_parallel():
     assert len(set(client.thread_names)) == 3
     assert id(client._detail_executor) == executor_id
     client.close()
+
+
+def test_load_descriptions_handles_worker_exception_and_disabled_state(monkeypatch):
+    client = KufarClient(
+        KufarConfig(page_delay=0, detail_delay=0, detail_workers=1)
+    )
+    ads = [{"link": "https://example/1", "description_status": "not_requested"}]
+    monkeypatch.setattr(
+        client,
+        "_fetch_description",
+        lambda link: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    try:
+        client._load_descriptions(ads)
+        assert ads[0]["description_status"] == "load_error"
+
+        client._descriptions_disabled.set()
+        second = [{"link": "https://example/2"}]
+        client._load_descriptions(second)
+        assert second[0]["description_status"] == "load_error"
+    finally:
+        client.close()
 
 
 def test_kufar_context_manager_and_description_failure():
@@ -351,10 +428,12 @@ def test_rate_limit_circuit_breaker_stops_description_requests(monkeypatch):
     )
     monkeypatch.setattr(client, "_wait_for_detail_slot", lambda: True)
 
-    assert client._fetch_description("https://example/item") is None
-    assert client._descriptions_disabled.is_set()
-    assert len(session.calls) == 2
-    client.close()
+    try:
+        assert client._fetch_description("https://example/item") is None
+        assert client._descriptions_disabled.is_set()
+        assert len(session.calls) == 2
+    finally:
+        client.close()
 
 
 def test_rate_limit_retry_can_recover(monkeypatch):
@@ -376,9 +455,32 @@ def test_rate_limit_retry_can_recover(monkeypatch):
     )
     monkeypatch.setattr(client, "_wait_for_detail_slot", lambda: True)
 
-    assert client._fetch_description("https://example/item") == "OK"
-    assert not client._descriptions_disabled.is_set()
-    client.close()
+    try:
+        assert client._fetch_description("https://example/item") == "OK"
+        assert not client._descriptions_disabled.is_set()
+    finally:
+        client.close()
+
+
+def test_retry_after_and_detail_rate_helpers(monkeypatch):
+    client = KufarClient(KufarConfig(page_delay=0, detail_delay=0))
+    try:
+        assert client._retry_after_seconds(
+            FakeResponse(headers={"Retry-After": "2.5"}), 1
+        ) == 2.5
+        assert client._retry_after_seconds(FakeResponse(headers={}), 2) == 4
+        assert client._retry_after_seconds(
+            FakeResponse(headers={"Retry-After": "999"}), 1
+        ) == 15
+
+        values = iter([10.0, 11.0])
+        monkeypatch.setattr("kufar_server_finder.kufar.time.monotonic", lambda: next(values))
+        client._defer_detail_requests(2)
+        assert client._next_detail_request_at == 12
+        client._reset_rate_limit_counter()
+        assert client._consecutive_rate_limits == 0
+    finally:
+        client.close()
 
 
 def test_abort_makes_close_non_blocking():

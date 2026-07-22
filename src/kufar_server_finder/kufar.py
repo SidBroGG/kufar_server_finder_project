@@ -91,33 +91,24 @@ class KufarClient:
     def fetch_ads(
         self,
         *,
-        query: str | None = None,
-        computers_only: bool = False,
         max_price: float = 100.0,
-        load_descriptions: bool = True,
     ) -> list[dict[str, Any]]:
-        categories: list[str | None]
-        if computers_only:
-            categories = [
-                self.config.category_computers,
-                self.config.category_laptops,
-            ]
-        else:
-            categories = [None]
+        categories = [
+            self.config.category_computers,
+            self.config.category_laptops,
+        ]
 
         results: list[dict[str, Any]] = []
         seen_links: set[str] = set()
 
         for category in categories:
             params = self._build_search_params(
-                query,
                 category,
                 max_price=max_price,
             )
             page_number = 1
             logger.info(
-                "Запуск парсера: query=%r, category=%r, max_price=%s BYN",
-                query,
+                "Запуск парсера: category=%r, max_price=%s BYN",
                 category,
                 max_price,
             )
@@ -140,10 +131,7 @@ class KufarClient:
                         continue
                     page_has_eligible_price = True
 
-                    parsed = self._parse_ad(
-                        raw_ad,
-                        load_descriptions=False,
-                    )
+                    parsed = self._parse_ad(raw_ad)
                     if parsed is None:
                         continue
 
@@ -153,7 +141,7 @@ class KufarClient:
                     seen_links.add(link)
                     page_results.append(parsed)
 
-                if load_descriptions and page_results:
+                if page_results:
                     self._load_descriptions(page_results)
                 results.extend(page_results)
 
@@ -233,8 +221,7 @@ class KufarClient:
 
     def _build_search_params(
         self,
-        query: str | None,
-        category: str | None,
+        category: str,
         *,
         max_price: float | None = None,
     ) -> dict[str, str]:
@@ -243,11 +230,8 @@ class KufarClient:
             "sort": "prc.a",
             "size": str(self.config.page_size),
             "lang": "ru",
+            "cat": category,
         }
-        if query:
-            params["query"] = query
-        if category:
-            params["cat"] = category
         if max_price is not None:
             max_price_cents = max(0, round(max_price * 100))
             params["prc"] = f"r:0,{max_price_cents}"
@@ -256,8 +240,6 @@ class KufarClient:
     def _parse_ad(
         self,
         raw_ad: dict[str, Any],
-        *,
-        load_descriptions: bool,
     ) -> dict[str, Any] | None:
         link = raw_ad.get("ad_link")
         if not link:
@@ -268,7 +250,7 @@ class KufarClient:
             logger.debug("Объявление пропущено из-за некорректной цены: %s", link)
             return None
 
-        result: dict[str, Any] = {
+        return {
             "title": raw_ad.get("subject") or "Без названия",
             "price": price,
             "link": link,
@@ -277,9 +259,6 @@ class KufarClient:
             "description_status": "not_requested",
             "characteristics": self._parse_characteristics(raw_ad),
         }
-        if load_descriptions:
-            self._apply_description_result(result, self._fetch_description(link))
-        return result
 
     def _get_json(self, url: str, **kwargs: Any) -> dict[str, Any]:
         response = self.session.get(
@@ -366,7 +345,8 @@ class KufarClient:
             logger.error(
                 "Kufar временно блокирует страницы объявлений (429). "
                 "Загрузка остальных описаний отключена для этого запуска. "
-                "Увеличьте --detail-delay или используйте --no-descriptions."
+                "Увеличьте KUFAR_DETAIL_DELAY или уменьшите "
+                "KUFAR_DETAIL_WORKERS в .env."
             )
         return blocked
 
@@ -419,3 +399,5 @@ class KufarClient:
             if page.get("label") == "next":
                 return page.get("token") or page.get("cursor")
         return None
+
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from .benchmark import CpuBenchmarkDataset
@@ -30,12 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = subparsers.add_parser("analyze", help="Отфильтровать готовый JSON")
     analyze.add_argument("--input", default="output_unfiltered.json")
     analyze.add_argument("--output", default="output.json")
-    _add_extract_specs_argument(analyze)
     _add_dataset_argument(analyze)
 
     vision = subparsers.add_parser(
         "vision",
-        help="Отдельно угадать отсутствующие характеристики по фотографиям",
+        help="Отдельно уточнить характеристики по фотографиям",
     )
     vision.add_argument("--input", default="output.json")
     vision.add_argument("--output", default="output_vision.json")
@@ -51,7 +51,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="output.xlsx",
         help="Excel-файл, создаваемый из итогового JSON",
     )
-    _add_extract_specs_argument(pipeline)
     _add_dataset_argument(pipeline)
 
     benchmark = subparsers.add_parser(
@@ -78,22 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="output.xlsx",
         help="Excel-файл, создаваемый из итогового JSON",
     )
-    _add_extract_specs_argument(run)
     _add_dataset_argument(run)
 
     return parser
-
-
-def _add_extract_specs_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--extract-specs",
-        "--infer-specs",
-        dest="extract_specs",
-        action="store_true",
-        help=(
-            "Извлечь явно написанные CPU/ОЗУ и определить сокет в том же AI-запросе"
-        ),
-    )
 
 
 def _add_dataset_argument(
@@ -110,30 +96,8 @@ def _add_dataset_argument(
 
 
 def _add_collect_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--query", default=None)
-    parser.add_argument("--computers-only", action="store_true")
     parser.add_argument("--max-price", type=float, default=100.0)
-    parser.add_argument(
-        "--no-descriptions",
-        action="store_true",
-        help="Не открывать каждое объявление для загрузки описания",
-    )
-    parser.add_argument("--region", default="7")
     parser.add_argument("--page-delay", type=float, default=1.0)
-    parser.add_argument("--detail-delay", type=float, default=1.0)
-    parser.add_argument(
-        "--detail-workers",
-        type=int,
-        default=3,
-        help="Количество параллельных загрузчиков описаний",
-    )
-    parser.add_argument(
-        "--detail-retries",
-        type=int,
-        default=3,
-        help="Количество попыток загрузки описания при сетевой ошибке или 429",
-    )
-    parser.add_argument("--timeout", type=float, default=20.0)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -154,11 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ads = load_ads(args.input)
             pipeline = _build_pipeline()
             try:
-                result = _analyze(
-                    ads,
-                    extract_specs=args.extract_specs,
-                    pipeline=pipeline,
-                )
+                result = _analyze(ads, pipeline=pipeline)
                 result = _apply_benchmark(
                     result,
                     args.dataset,
@@ -185,11 +145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ads = load_ads(args.input)
             pipeline = _build_pipeline()
             try:
-                result = _analyze(
-                    ads,
-                    extract_specs=args.extract_specs,
-                    pipeline=pipeline,
-                )
+                result = _analyze(ads, pipeline=pipeline)
                 result = _vision(result, pipeline=pipeline)
                 result = _apply_benchmark(
                     result,
@@ -224,11 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             save_ads(args.raw_output, ads)
             pipeline = _build_pipeline()
             try:
-                result = _analyze(
-                    ads,
-                    extract_specs=args.extract_specs,
-                    pipeline=pipeline,
-                )
+                result = _analyze(ads, pipeline=pipeline)
                 result = _vision(result, pipeline=pipeline)
                 result = _apply_benchmark(
                     result,
@@ -260,22 +212,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _collect(args: argparse.Namespace) -> list[dict]:
-    config = KufarConfig(
-        region=args.region,
-        request_timeout=args.timeout,
+    config = replace(
+        KufarConfig.from_env(),
         page_delay=max(args.page_delay, 0),
-        detail_delay=max(args.detail_delay, 0),
-        detail_workers=max(getattr(args, "detail_workers", 3), 1),
-        detail_max_retries=max(getattr(args, "detail_retries", 3), 1),
     )
     client = KufarClient(config)
     try:
-        return client.fetch_ads(
-            query=args.query,
-            computers_only=args.computers_only,
-            max_price=args.max_price,
-            load_descriptions=not args.no_descriptions,
-        )
+        return client.fetch_ads(max_price=args.max_price)
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -298,16 +241,12 @@ def _close_pipeline(pipeline: Any) -> None:
 def _analyze(
     ads: list[dict],
     *,
-    extract_specs: bool,
     pipeline: AdPipeline | None = None,
 ) -> list[dict]:
     owns_pipeline = pipeline is None
     active_pipeline = pipeline or _build_pipeline()
     try:
-        return active_pipeline.filter_working_targets(
-            ads,
-            extract_specs=extract_specs,
-        )
+        return active_pipeline.filter_working_targets(ads)
     finally:
         if owns_pipeline:
             _close_pipeline(active_pipeline)

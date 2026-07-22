@@ -47,12 +47,7 @@ def test_from_env_ignores_old_backup_key_variables(monkeypatch):
 
 
 def test_from_env_rejects_missing_single_key(monkeypatch):
-    # Изолируем тест от локального .env разработчика: иначе load_dotenv()
-    # восстановит удалённый GEMINI_API_KEY и проверка станет зависеть от окружения.
-    monkeypatch.setattr(
-        "kufar_server_finder.config.load_dotenv",
-        lambda: False,
-    )
+    monkeypatch.setattr("kufar_server_finder.config.load_dotenv", lambda: False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
@@ -95,16 +90,78 @@ def test_from_env_validates_numeric_options(monkeypatch, name, value, message):
         GeminiConfig.from_env()
 
 
-def test_direct_config_validates_new_parallel_and_chunk_options():
+def test_kufar_from_env_loads_removed_cli_parameters(monkeypatch):
+    monkeypatch.setenv("KUFAR_REGION", "5")
+    monkeypatch.setenv("KUFAR_TIMEOUT", "12.5")
+    monkeypatch.setenv("KUFAR_DETAIL_DELAY", "1.5")
+    monkeypatch.setenv("KUFAR_DETAIL_WORKERS", "4")
+    monkeypatch.setenv("KUFAR_DETAIL_RETRIES", "6")
+
+    config = KufarConfig.from_env()
+
+    assert config.region == "5"
+    assert config.request_timeout == 12.5
+    assert config.detail_delay == 1.5
+    assert config.detail_workers == 4
+    assert config.detail_max_retries == 6
+    assert config.category_computers == "16020"
+    assert config.category_laptops == "16040"
+
+
+def test_kufar_from_env_uses_defaults(monkeypatch):
+    monkeypatch.setattr("kufar_server_finder.config.load_dotenv", lambda: False)
+    for name in (
+        "KUFAR_REGION",
+        "KUFAR_TIMEOUT",
+        "KUFAR_DETAIL_DELAY",
+        "KUFAR_DETAIL_WORKERS",
+        "KUFAR_DETAIL_RETRIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = KufarConfig.from_env()
+
+    assert config.region == "7"
+    assert config.request_timeout == 20
+    assert config.detail_delay == 1
+    assert config.detail_workers == 3
+    assert config.detail_max_retries == 3
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("KUFAR_REGION", "", "не может быть пустым"),
+        ("KUFAR_TIMEOUT", "0", "больше нуля"),
+        ("KUFAR_DETAIL_DELAY", "-1", "не может быть отрицательным"),
+        ("KUFAR_DETAIL_WORKERS", "0", "больше нуля"),
+        ("KUFAR_DETAIL_RETRIES", "0", "больше нуля"),
+    ],
+)
+def test_kufar_from_env_validates_options(monkeypatch, name, value, message):
+    monkeypatch.setattr("kufar_server_finder.config.load_dotenv", lambda: False)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=message):
+        KufarConfig.from_env()
+
+
+def test_direct_config_validates_parallel_chunk_and_kufar_options():
     with pytest.raises(ValueError, match="GEMINI_MAX_CHUNK_CHARS"):
         GeminiConfig(api_key="key", max_chunk_chars=0)
     with pytest.raises(ValueError, match="GEMINI_REQUEST_DELAY"):
         GeminiConfig(api_key="key", request_delay=-1)
     with pytest.raises(ValueError, match="GEMINI_IMAGE_TIMEOUT"):
         GeminiConfig(api_key="key", image_timeout=0)
+    with pytest.raises(ValueError, match="KUFAR_REGION"):
+        KufarConfig(region=" ")
+    with pytest.raises(ValueError, match="KUFAR_TIMEOUT"):
+        KufarConfig(request_timeout=0)
+    with pytest.raises(ValueError, match="KUFAR_PAGE_DELAY"):
+        KufarConfig(page_delay=-1)
     with pytest.raises(ValueError, match="KUFAR_DETAIL_WORKERS"):
         KufarConfig(detail_workers=0)
-    with pytest.raises(ValueError, match="KUFAR_DETAIL_MAX_RETRIES"):
+    with pytest.raises(ValueError, match="KUFAR_DETAIL_RETRIES"):
         KufarConfig(detail_max_retries=0)
     with pytest.raises(ValueError, match="KUFAR_RATE_LIMIT_THRESHOLD"):
         KufarConfig(rate_limit_threshold=0)

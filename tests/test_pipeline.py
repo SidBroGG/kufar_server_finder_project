@@ -63,7 +63,11 @@ def test_filters_and_updates_price_without_mutating_source():
         {"link": "https://example/broken", "price": 20},
     ]
     result = AdPipeline(FakeAnalyzer()).filter_working_targets(source)
-    assert result == [{"link": "https://example/working", "price": 40.0}]
+    assert len(result) == 1
+    assert result[0]["link"] == "https://example/working"
+    assert result[0]["price"] == 40.0
+    assert result[0]["cpu_model"] == "Core i5-3470"
+    assert result[0]["ram_gb"] == 8
     assert source[0]["price"] == 50
 
 
@@ -92,12 +96,9 @@ def test_description_network_failure_prevents_false_removal():
     assert result[0]["analysis_status"] == "pending"
 
 
-def test_extracts_explicit_specs_and_marks_source():
+def test_extracts_explicit_specs_by_default_and_marks_source():
     source = [{"link": "https://example/working", "price": 50, "title": "PC"}]
-    result = AdPipeline(FakeAnalyzer()).filter_working_targets(
-        source,
-        extract_specs=True,
-    )
+    result = AdPipeline(FakeAnalyzer()).filter_working_targets(source)
     assert result[0]["cpu_model"] == "Core i5-3470"
     assert result[0]["cpu_model_source"] == "text_exact"
     assert result[0]["ram_gb"] == 8
@@ -140,10 +141,7 @@ def test_text_socket_guess_has_priority_over_cpu_model_mapping():
             ]
 
     source = [{"link": "https://example/working", "price": 50}]
-    result = AdPipeline(DescriptionSocketAnalyzer()).filter_working_targets(
-        source,
-        extract_specs=True,
-    )
+    result = AdPipeline(DescriptionSocketAnalyzer()).filter_working_targets(source)
 
     assert result[0]["cpu_socket"] == "LGA1150"
     assert result[0]["cpu_socket_source"] == "description_guess"
@@ -450,11 +448,12 @@ def test_filter_and_specs_use_single_analysis_call():
 
     analyzer = CombinedAnalyzer()
     result = AdPipeline(analyzer).filter_working_targets(
-        [{"link": "https://example/working", "price": 12}],
-        extract_specs=True,
+        [{"link": "https://example/working", "price": 12}]
     )
 
     assert analyzer.analysis_calls == 1
     assert result[0]["cpu_model"] == "Intel Core i5-3470"
     assert result[0]["ram_type"] == "DDR3"
     assert result[0]["ram_gb"] == 8
+
+

@@ -1,23 +1,57 @@
+import argparse
+
+import pytest
+
 from kufar_server_finder.cli import build_parser
 
 
-def test_cli_module_imports_and_parser_builds():
+def test_cli_module_imports_and_parser_builds_without_removed_flags():
     parser = build_parser()
     args = parser.parse_args(
         [
             "run",
-            "--computers-only",
             "--max-price",
             "20",
-            "--infer-specs",
             "--dataset",
             "CPU_benchmark_v4.csv",
         ]
     )
+
     assert args.command == "run"
-    assert args.extract_specs is True
     assert args.dataset == "CPU_benchmark_v4.csv"
     assert args.excel_output == "output.xlsx"
+    for removed in (
+        "query",
+        "computers_only",
+        "no_descriptions",
+        "region",
+        "detail_delay",
+        "detail_workers",
+        "detail_retries",
+        "timeout",
+        "extract_specs",
+    ):
+        assert not hasattr(args, removed)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["collect", "--query", "pc"],
+        ["collect", "--computers-only"],
+        ["collect", "--no-descriptions"],
+        ["collect", "--region", "5"],
+        ["collect", "--detail-delay", "2"],
+        ["collect", "--detail-workers", "2"],
+        ["collect", "--detail-retries", "4"],
+        ["collect", "--timeout", "10"],
+        ["analyze", "--extract-specs"],
+        ["analyze", "--infer-specs"],
+    ],
+)
+def test_removed_cli_flags_are_rejected(arguments):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(arguments)
 
 
 def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
@@ -39,9 +73,7 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli,
         "_analyze",
-        lambda ads, *, extract_specs, pipeline=None: [
-            {"link": "x", "price": 10}
-        ],
+        lambda ads, *, pipeline=None: [{"link": "x", "price": 10}],
     )
     monkeypatch.setattr(cli, "_vision", lambda ads, *, pipeline=None: ads)
     monkeypatch.setattr(
@@ -66,8 +98,6 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
             str(excel_path),
             "--page-delay",
             "0",
-            "--detail-delay",
-            "0",
         ]
     )
 
@@ -76,6 +106,7 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     assert raw_path.exists()
     assert json_path.exists()
     assert pipeline_builds == [shared_pipeline]
+
 
 def test_new_commands_parse():
     parser = build_parser()
@@ -89,13 +120,11 @@ def test_new_commands_parse():
             "final.json",
             "--excel-output",
             "final.xlsx",
-            "--extract-specs",
             "--dataset",
             "cpu.csv",
         ]
     )
     assert pipeline_args.command == "pipeline"
-    assert pipeline_args.extract_specs is True
     assert pipeline_args.dataset == "cpu.csv"
 
     benchmark_args = parser.parse_args(
@@ -138,9 +167,7 @@ def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path)
     monkeypatch.setattr(
         cli,
         "_analyze",
-        lambda ads, *, extract_specs, pipeline=None: [
-            {"link": "x", "stage": "analyze", "extract_specs": extract_specs}
-        ],
+        lambda ads, *, pipeline=None: [{"link": "x", "stage": "analyze"}],
     )
     monkeypatch.setattr(
         cli,
@@ -150,9 +177,7 @@ def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path)
     monkeypatch.setattr(
         cli,
         "_apply_benchmark",
-        lambda ads, dataset, *, pipeline=None: [
-            {**ads[0], "dataset": dataset}
-        ],
+        lambda ads, dataset, *, pipeline=None: [{**ads[0], "dataset": dataset}],
     )
     monkeypatch.setattr(
         cli,
@@ -169,7 +194,6 @@ def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path)
             str(output_path),
             "--excel-output",
             str(excel_path),
-            "--extract-specs",
             "--dataset",
             "cpu.csv",
         ]
@@ -237,9 +261,6 @@ def test_excel_command_exports_json(monkeypatch, tmp_path):
     assert result == 0
     assert calls == [(str(input_path), str(output_path))]
 
-import argparse
-import pytest
-
 
 def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
     from kufar_server_finder import cli
@@ -259,16 +280,12 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli,
         "_analyze",
-        lambda ads, *, extract_specs, pipeline=None: [
-            {**ads[0], "extract": extract_specs}
-        ],
+        lambda ads, *, pipeline=None: [{**ads[0], "specs": True}],
     )
     monkeypatch.setattr(
         cli,
         "_apply_benchmark",
-        lambda ads, dataset, *, pipeline=None: [
-            {**ads[0], "dataset": dataset}
-        ],
+        lambda ads, dataset, *, pipeline=None: [{**ads[0], "dataset": dataset}],
     )
     assert cli.main(
         [
@@ -277,12 +294,11 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
             str(input_path),
             "--output",
             str(analyze_output),
-            "--extract-specs",
             "--dataset",
             "cpu.csv",
         ]
     ) == 0
-    assert load_ads(analyze_output)[0]["extract"] is True
+    assert load_ads(analyze_output)[0]["specs"] is True
 
     monkeypatch.setattr(
         cli,
@@ -298,17 +314,29 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
 def test_main_returns_expected_error_codes(monkeypatch, tmp_path):
     from kufar_server_finder import cli
 
-    monkeypatch.setattr(cli, "_collect", lambda args: (_ for _ in ()).throw(ValueError("bad")))
+    monkeypatch.setattr(
+        cli,
+        "_collect",
+        lambda args: (_ for _ in ()).throw(ValueError("bad")),
+    )
     assert cli.main(["collect", "--output", str(tmp_path / "x.json")]) == 2
 
-    monkeypatch.setattr(cli, "_collect", lambda args: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        cli,
+        "_collect",
+        lambda args: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     assert cli.main(["collect", "--output", str(tmp_path / "x.json")]) == 1
 
-    monkeypatch.setattr(cli, "_collect", lambda args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        cli,
+        "_collect",
+        lambda args: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
     assert cli.main(["collect", "--output", str(tmp_path / "x.json")]) == 130
 
 
-def test_collect_builds_kufar_config_and_forwards_arguments(monkeypatch):
+def test_collect_reads_kufar_settings_from_env_and_uses_categories(monkeypatch):
     from kufar_server_finder import cli
 
     captured = {}
@@ -316,52 +344,62 @@ def test_collect_builds_kufar_config_and_forwards_arguments(monkeypatch):
     class FakeClient:
         def __init__(self, config):
             captured["config"] = config
+            captured["closed"] = False
 
         def fetch_ads(self, **kwargs):
             captured["kwargs"] = kwargs
             return [{"link": "x"}]
 
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setenv("KUFAR_REGION", "5")
+    monkeypatch.setenv("KUFAR_TIMEOUT", "9")
+    monkeypatch.setenv("KUFAR_DETAIL_DELAY", "2")
+    monkeypatch.setenv("KUFAR_DETAIL_WORKERS", "2")
+    monkeypatch.setenv("KUFAR_DETAIL_RETRIES", "4")
     monkeypatch.setattr(cli, "KufarClient", FakeClient)
-    args = argparse.Namespace(
-        region="5",
-        timeout=9,
-        page_delay=-1,
-        detail_delay=-2,
-        detail_workers=2,
-        detail_retries=4,
-        query="pc",
-        computers_only=True,
-        max_price=20,
-        no_descriptions=True,
-    )
+    args = argparse.Namespace(page_delay=-1, max_price=20)
 
     assert cli._collect(args) == [{"link": "x"}]
     assert captured["config"].region == "5"
+    assert captured["config"].request_timeout == 9
     assert captured["config"].page_delay == 0
-    assert captured["config"].detail_delay == 0
+    assert captured["config"].detail_delay == 2
     assert captured["config"].detail_workers == 2
     assert captured["config"].detail_max_retries == 4
-    assert captured["kwargs"] == {
-        "query": "pc",
-        "computers_only": True,
-        "max_price": 20,
-        "load_descriptions": False,
-    }
+    assert captured["kwargs"] == {"max_price": 20}
+    assert captured["closed"] is True
 
 
-def test_pipeline_helpers_delegate(monkeypatch):
+def test_pipeline_helpers_delegate_and_close_owned_pipeline(monkeypatch):
     from kufar_server_finder import cli
 
     class FakePipeline:
-        def filter_working_targets(self, ads, extract_specs):
-            return [{"stage": "analyze", "extract": extract_specs}]
+        def __init__(self):
+            self.closed = False
+
+        def filter_working_targets(self, ads):
+            return [{"stage": "analyze", "specs": True}]
 
         def enrich_missing_specs_from_images(self, ads):
             return [{"stage": "vision"}]
 
-    monkeypatch.setattr(cli, "_build_pipeline", lambda: FakePipeline())
-    assert cli._analyze([{}], extract_specs=True)[0]["extract"] is True
+        def close(self):
+            self.closed = True
+
+    pipelines = []
+
+    def build():
+        pipeline = FakePipeline()
+        pipelines.append(pipeline)
+        return pipeline
+
+    monkeypatch.setattr(cli, "_build_pipeline", build)
+    assert cli._analyze([{}])[0]["specs"] is True
+    assert pipelines[-1].closed is True
     assert cli._vision([{}]) == [{"stage": "vision"}]
+    assert pipelines[-1].closed is True
 
 
 def test_build_pipeline_creates_analyzer(monkeypatch):

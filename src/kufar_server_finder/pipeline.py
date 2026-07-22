@@ -155,13 +155,7 @@ class AdPipeline:
     def filter_working_targets(
         self,
         ads: list[dict[str, Any]],
-        *,
-        extract_specs: bool = False,
-        infer_specs: bool | None = None,
     ) -> list[dict[str, Any]]:
-        # Совместимость со старым именем аргумента.
-        if infer_specs is not None:
-            extract_specs = infer_specs
         if not ads:
             return []
 
@@ -205,7 +199,7 @@ class AdPipeline:
                 item["price"] = analysis.real_price
             filtered.append(item)
 
-        if extract_specs and filtered:
+        if filtered:
             self._merge_analysis_specs(filtered, analyses_by_link)
         self._infer_sockets_from_cpu_models(filtered)
 
@@ -529,3 +523,5 @@ def _same_cpu_identity(current: str, proposed: str) -> bool:
     current_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(current)}
     proposed_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(proposed)}
     return bool(current_ids) and current_ids == proposed_ids
+
+

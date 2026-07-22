@@ -18,6 +18,9 @@ DEFAULT_WORKER_COUNT = 3
 DEFAULT_VISION_MAX_IMAGES = 5
 DEFAULT_IMAGE_DOWNLOAD_WORKERS = 3
 DEFAULT_IMAGE_TIMEOUT = 20.0
+DEFAULT_KUFAR_REGION = "7"
+DEFAULT_KUFAR_REQUEST_TIMEOUT = 20.0
+DEFAULT_KUFAR_DETAIL_DELAY = 1.0
 DEFAULT_KUFAR_DETAIL_WORKERS = 3
 DEFAULT_KUFAR_DETAIL_MAX_RETRIES = 3
 DEFAULT_KUFAR_RATE_LIMIT_THRESHOLD = 3
@@ -114,13 +117,13 @@ class GeminiConfig:
 
 @dataclass(frozen=True, slots=True)
 class KufarConfig:
-    region: str = "7"
+    region: str = DEFAULT_KUFAR_REGION
     category_computers: str = "16020"
     category_laptops: str = "16040"
     page_size: int = 43
-    request_timeout: float = 20.0
+    request_timeout: float = DEFAULT_KUFAR_REQUEST_TIMEOUT
     page_delay: float = 1.0
-    detail_delay: float = 1.0
+    detail_delay: float = DEFAULT_KUFAR_DETAIL_DELAY
     detail_workers: int = DEFAULT_KUFAR_DETAIL_WORKERS
     detail_max_retries: int = DEFAULT_KUFAR_DETAIL_MAX_RETRIES
     rate_limit_threshold: int = DEFAULT_KUFAR_RATE_LIMIT_THRESHOLD
@@ -130,14 +133,39 @@ class KufarConfig:
     )
 
     def __post_init__(self) -> None:
+        if not self.region.strip():
+            raise ValueError("KUFAR_REGION не может быть пустым")
+        if self.request_timeout <= 0:
+            raise ValueError("KUFAR_TIMEOUT должен быть больше нуля")
+        if self.page_delay < 0:
+            raise ValueError("KUFAR_PAGE_DELAY не может быть отрицательным")
         if self.detail_workers <= 0:
             raise ValueError("KUFAR_DETAIL_WORKERS должен быть больше нуля")
         if self.detail_max_retries <= 0:
-            raise ValueError("KUFAR_DETAIL_MAX_RETRIES должен быть больше нуля")
+            raise ValueError("KUFAR_DETAIL_RETRIES должен быть больше нуля")
         if self.rate_limit_threshold <= 0:
             raise ValueError("KUFAR_RATE_LIMIT_THRESHOLD должен быть больше нуля")
         if self.detail_delay < 0:
             raise ValueError("KUFAR_DETAIL_DELAY не может быть отрицательным")
+
+    @classmethod
+    def from_env(cls) -> "KufarConfig":
+        load_dotenv()
+        return cls(
+            region=_string("KUFAR_REGION", DEFAULT_KUFAR_REGION),
+            request_timeout=_positive_float(
+                "KUFAR_TIMEOUT", DEFAULT_KUFAR_REQUEST_TIMEOUT
+            ),
+            detail_delay=_non_negative_float(
+                "KUFAR_DETAIL_DELAY", DEFAULT_KUFAR_DETAIL_DELAY
+            ),
+            detail_workers=_positive_int(
+                "KUFAR_DETAIL_WORKERS", DEFAULT_KUFAR_DETAIL_WORKERS
+            ),
+            detail_max_retries=_positive_int(
+                "KUFAR_DETAIL_RETRIES", DEFAULT_KUFAR_DETAIL_MAX_RETRIES
+            ),
+        )
 
 
 def _validate_positive(name: str, value: int) -> None:
@@ -148,6 +176,13 @@ def _validate_positive(name: str, value: int) -> None:
 def _optional_string(name: str) -> str | None:
     value = os.getenv(name, "").strip()
     return value or None
+
+
+def _string(name: str, default: str) -> str:
+    value = os.getenv(name, default).strip()
+    if not value:
+        raise ValueError(f"{name} не может быть пустым")
+    return value
 
 
 def _positive_int(name: str, default: int) -> int:
