@@ -44,21 +44,8 @@ SUPPORTED_IMAGE_MIME_TYPES = {
 @dataclass(slots=True)
 class _GeminiWorker:
     number: int
-    key_numbers: tuple[int, ...]
-    clients: tuple[Any, ...]
+    client: Any
     image_session: requests.Session
-    client_index: int = 0
-
-    @property
-    def client(self) -> Any:
-        return self.clients[self.client_index]
-
-    @property
-    def current_key_number(self) -> int:
-        return self.key_numbers[self.client_index]
-
-    def rotate_api_key(self) -> None:
-        self.client_index = (self.client_index + 1) % len(self.clients)
 
 
 class GeminiAnalyzer:
@@ -70,45 +57,51 @@ class GeminiAnalyzer:
         client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self.config = config
-        factory = client_factory or (lambda api_key: genai.Client(api_key=api_key))
 
         if client is not None:
-            # Сохраняет совместимость с тестами и внешним кодом, который передаёт
-            # один заранее созданный клиент. Обычный запуск всегда использует 3 worker.
-            groups = ((config.api_key,),)
-            client_groups: tuple[tuple[Any, ...], ...] = ((client,),)
-            key_number_groups = ((1,),)
+            clients = (client,)
         else:
-            groups = config.worker_api_key_groups
-            client_groups = tuple(
-                tuple(factory(api_key) for api_key in group) for group in groups
-            )
-            key_number_groups = (
-                (1, 2, 3),
-                (4, 5, 6),
-                (7, 8, 9),
+            factory = client_factory or self._create_client
+            clients = tuple(
+                factory(config.api_key) for _ in range(config.worker_count)
             )
 
-        self._worker_api_key_groups = groups
-        sessions = self._build_image_sessions(len(groups), image_session)
+        sessions = self._build_image_sessions(len(clients), image_session)
         self._workers = tuple(
             _GeminiWorker(
                 number=index + 1,
-                key_numbers=key_number_groups[index],
-                clients=client_groups[index],
+                client=worker_client,
                 image_session=sessions[index],
             )
-            for index in range(len(groups))
+            for index, worker_client in enumerate(clients)
         )
 
     @property
-    def worker_api_key_groups(self) -> tuple[tuple[str, ...], ...]:
-        return self._worker_api_key_groups
+    def worker_count(self) -> int:
+        return len(self._workers)
+
+    @property
+    def worker_api_keys(self) -> tuple[str, ...]:
+        return tuple(self.config.api_key for _ in self._workers)
 
     @property
     def client(self) -> Any:
-        """Совместимость: текущий клиент первого worker."""
+        """Совместимость: клиент первого worker."""
         return self._workers[0].client
+
+    def _create_client(self, api_key: str) -> genai.Client:
+        http_options_values: dict[str, str] = {}
+        if self.config.base_url:
+            http_options_values["base_url"] = self.config.base_url
+        if self.config.api_version:
+            http_options_values["api_version"] = self.config.api_version
+
+        if not http_options_values:
+            return genai.Client(api_key=api_key)
+        return genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(**http_options_values),
+        )
 
     def analyze_ads(self, ads: list[dict[str, Any]]) -> list[AdAnalysis]:
         payload = [self._analysis_payload(ad) for ad in ads]
@@ -376,11 +369,8 @@ class GeminiAnalyzer:
         adapter: TypeAdapter[Any],
     ) -> Any | None:
         last_error: Exception | None = None
-        rate_limit_attempts = 0
-        other_attempts = 0
-        max_rate_limit_attempts = self.config.max_retries * len(worker.clients)
 
-        while True:
+        for attempt in range(1, self.config.max_retries + 1):
             try:
                 response = worker.client.models.generate_content(
                     model=model,
@@ -397,36 +387,17 @@ class GeminiAnalyzer:
                 return adapter.validate_python(json.loads(response.text))
             except Exception as exc:  # SDK выбрасывает несколько типов ошибок
                 last_error = exc
-
-                if self._is_rate_limit_error(exc):
-                    rate_limit_attempts += 1
-                    previous_key = worker.current_key_number
-                    worker.rotate_api_key()
-                    logger.warning(
-                        "Worker %s: Gemini 429 на ключе %s; следующий ключ %s; "
-                        "попытка %s/%s",
-                        worker.number,
-                        previous_key,
-                        worker.current_key_number,
-                        rate_limit_attempts,
-                        max_rate_limit_attempts,
-                    )
-                    if rate_limit_attempts < max_rate_limit_attempts:
-                        continue
-                    break
-
-                other_attempts += 1
+                error_name = "Gemini 429" if self._is_rate_limit_error(exc) else "ошибка Gemini"
                 logger.warning(
-                    "Worker %s: ошибка Gemini на ключе %s, попытка %s/%s: %s",
+                    "Worker %s: %s, попытка %s/%s: %s",
                     worker.number,
-                    worker.current_key_number,
-                    other_attempts,
+                    error_name,
+                    attempt,
                     self.config.max_retries,
                     exc,
                 )
-                if other_attempts >= self.config.max_retries:
-                    break
-                time.sleep(min(2 ** (other_attempts - 1), 8))
+                if attempt < self.config.max_retries:
+                    time.sleep(min(2 ** (attempt - 1), 8))
 
         logger.error(
             "Worker %s: запрос пропущен после повторных ошибок: %s",
@@ -434,10 +405,6 @@ class GeminiAnalyzer:
             last_error,
         )
         return None
-
-    def _rotate_api_key(self, worker_index: int = 0) -> None:
-        """Совместимость с прежним приватным методом."""
-        self._workers[worker_index].rotate_api_key()
 
     @staticmethod
     def _is_rate_limit_error(exc: Exception) -> bool:

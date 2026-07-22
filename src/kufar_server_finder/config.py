@@ -5,28 +5,24 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-DEFAULT_ANALYSIS_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_SPECS_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_VISION_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_ANALYSIS_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_SPECS_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_VISION_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_CHUNK_SIZE = 30
 DEFAULT_SPECS_CHUNK_SIZE = 25
 DEFAULT_REQUEST_DELAY = 1.0
 DEFAULT_MAX_RETRIES = 3
+DEFAULT_WORKER_COUNT = 3
 DEFAULT_VISION_MAX_IMAGES = 5
 DEFAULT_IMAGE_TIMEOUT = 20.0
-GEMINI_WORKER_COUNT = 3
-GEMINI_KEYS_PER_WORKER = 3
-GEMINI_API_KEY_COUNT = GEMINI_WORKER_COUNT * GEMINI_KEYS_PER_WORKER
-GEMINI_API_KEY_ENV_NAMES = (
-    "GEMINI_API_KEY",
-    *(f"GEMINI_API_KEY_{index}" for index in range(2, GEMINI_API_KEY_COUNT + 1)),
-)
 
 
 @dataclass(frozen=True, slots=True)
 class GeminiConfig:
     api_key: str
-    backup_api_keys: tuple[str, ...] = ()
+    worker_count: int = DEFAULT_WORKER_COUNT
+    base_url: str | None = None
+    api_version: str | None = None
     analysis_model: str = DEFAULT_ANALYSIS_MODEL
     specs_model: str = DEFAULT_SPECS_MODEL
     vision_model: str = DEFAULT_VISION_MODEL
@@ -38,46 +34,26 @@ class GeminiConfig:
     image_timeout: float = DEFAULT_IMAGE_TIMEOUT
     max_description_chars: int = 1_200
 
-    @property
-    def api_keys(self) -> tuple[str, ...]:
-        return (self.api_key, *self.backup_api_keys)
-
-    @property
-    def worker_api_key_groups(self) -> tuple[tuple[str, ...], ...]:
-        keys = self.api_keys
-        if len(keys) != GEMINI_API_KEY_COUNT:
-            raise ValueError(
-                "Для трёх Gemini worker требуется ровно 9 API-ключей: "
-                "GEMINI_API_KEY и GEMINI_API_KEY_2 ... GEMINI_API_KEY_9."
-            )
-        if len(set(keys)) != len(keys):
-            raise ValueError("Все 9 Gemini API-ключей должны быть уникальными.")
-
-        return tuple(
-            tuple(keys[start : start + GEMINI_KEYS_PER_WORKER])
-            for start in range(0, GEMINI_API_KEY_COUNT, GEMINI_KEYS_PER_WORKER)
-        )
+    def __post_init__(self) -> None:
+        if not self.api_key.strip():
+            raise ValueError("GEMINI_API_KEY не может быть пустым")
+        if self.worker_count <= 0:
+            raise ValueError("GEMINI_WORKER_COUNT должен быть больше нуля")
 
     @classmethod
     def from_env(cls) -> "GeminiConfig":
         load_dotenv()
-        api_keys = tuple(
-            os.getenv(name, "").strip() for name in GEMINI_API_KEY_ENV_NAMES
-        )
-        missing = [
-            name for name, value in zip(GEMINI_API_KEY_ENV_NAMES, api_keys) if not value
-        ]
-        if missing:
-            raise ValueError(
-                "Для трёх Gemini worker задайте все 9 API-ключей. "
-                f"Не заполнены: {', '.join(missing)}."
-            )
-        if len(set(api_keys)) != GEMINI_API_KEY_COUNT:
-            raise ValueError("Все 9 Gemini API-ключей должны быть уникальными.")
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("Задайте GEMINI_API_KEY в файле .env.")
 
         return cls(
-            api_key=api_keys[0],
-            backup_api_keys=api_keys[1:],
+            api_key=api_key,
+            worker_count=_positive_int(
+                "GEMINI_WORKER_COUNT", DEFAULT_WORKER_COUNT
+            ),
+            base_url=_optional_string("GEMINI_BASE_URL"),
+            api_version=_optional_string("GEMINI_API_VERSION"),
             analysis_model=os.getenv(
                 "GEMINI_ANALYSIS_MODEL", DEFAULT_ANALYSIS_MODEL
             ),
@@ -115,6 +91,11 @@ class KufarConfig:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
     )
+
+
+def _optional_string(name: str) -> str | None:
+    value = os.getenv(name, "").strip()
+    return value or None
 
 
 def _positive_int(name: str, default: int) -> int:

@@ -61,7 +61,7 @@ class FakeImageSession:
 def make_config(**changes):
     config = GeminiConfig(
         api_key="key-1",
-        backup_api_keys=tuple(f"key-{index}" for index in range(2, 10)),
+        worker_count=3,
         chunk_size=1,
         specs_chunk_size=1,
         request_delay=0,
@@ -90,21 +90,57 @@ def analysis_json(link):
     )
 
 
-def test_creates_three_workers_with_fixed_key_groups():
+def test_creates_configured_workers_with_one_shared_key():
     created = []
 
     def factory(key):
         created.append(key)
         return FakeClient(key, lambda key, kwargs: "[]")
 
-    analyzer = GeminiAnalyzer(make_config(), client_factory=factory)
-
-    assert created == [f"key-{index}" for index in range(1, 10)]
-    assert analyzer.worker_api_key_groups == (
-        ("key-1", "key-2", "key-3"),
-        ("key-4", "key-5", "key-6"),
-        ("key-7", "key-8", "key-9"),
+    analyzer = GeminiAnalyzer(
+        make_config(worker_count=4),
+        client_factory=factory,
     )
+
+    assert created == ["key-1"] * 4
+    assert analyzer.worker_count == 4
+    assert analyzer.worker_api_keys == ("key-1",) * 4
+
+
+def test_client_receives_optional_base_url_and_api_version(monkeypatch):
+    calls = []
+
+    def fake_client(**kwargs):
+        calls.append(kwargs)
+        return FakeClient(kwargs["api_key"], lambda key, request: "[]")
+
+    monkeypatch.setattr("kufar_server_finder.gemini.genai.Client", fake_client)
+    analyzer = GeminiAnalyzer(
+        make_config(
+            worker_count=2,
+            base_url="https://proxy.example",
+            api_version="v1",
+        )
+    )
+
+    assert analyzer.worker_count == 2
+    assert len(calls) == 2
+    assert all(call["api_key"] == "key-1" for call in calls)
+    assert all(call["http_options"].base_url == "https://proxy.example" for call in calls)
+    assert all(call["http_options"].api_version == "v1" for call in calls)
+
+
+def test_default_client_omits_http_options(monkeypatch):
+    calls = []
+
+    def fake_client(**kwargs):
+        calls.append(kwargs)
+        return FakeClient(kwargs["api_key"], lambda key, request: "[]")
+
+    monkeypatch.setattr("kufar_server_finder.gemini.genai.Client", fake_client)
+    GeminiAnalyzer(make_config(worker_count=1))
+
+    assert calls == [{"api_key": "key-1"}]
 
 
 def test_three_workers_execute_chunks_concurrently_and_keep_result_order():
@@ -130,42 +166,23 @@ def test_three_workers_execute_chunks_concurrently_and_keep_result_order():
     assert [item.link for item in result] == ["link-1", "link-2", "link-3"]
     assert {(key, link) for key, link, _ in calls} == {
         ("key-1", "link-1"),
-        ("key-4", "link-2"),
-        ("key-7", "link-3"),
+        ("key-1", "link-2"),
+        ("key-1", "link-3"),
     }
     assert len({thread_name for _, _, thread_name in calls}) == 3
 
 
-def test_worker_rotates_only_inside_its_own_key_group_on_429():
+def test_rate_limit_retries_same_single_key(monkeypatch):
     calls = []
+    sleeps = []
 
     def handler(key, kwargs):
         calls.append(key)
-        if key == "key-1":
+        if len(calls) == 1:
             raise RateLimitError("429")
         return analysis_json(parse_chunk_link(kwargs["contents"]))
 
-    analyzer = GeminiAnalyzer(
-        make_config(),
-        client_factory=lambda key: FakeClient(key, handler),
-    )
-
-    result = analyzer.analyze_ads([{"link": "x"}])
-
-    assert [item.link for item in result] == ["x"]
-    assert calls == ["key-1", "key-2"]
-    assert analyzer.client.models.key == "key-2"
-
-
-def test_worker_wraps_from_third_key_back_to_first_key():
-    calls = []
-
-    def handler(key, kwargs):
-        calls.append(key)
-        if len(calls) <= 3:
-            raise RateLimitError("RESOURCE_EXHAUSTED")
-        return analysis_json(parse_chunk_link(kwargs["contents"]))
-
+    monkeypatch.setattr("kufar_server_finder.gemini.time.sleep", sleeps.append)
     analyzer = GeminiAnalyzer(
         make_config(max_retries=2),
         client_factory=lambda key: FakeClient(key, handler),
@@ -173,30 +190,10 @@ def test_worker_wraps_from_third_key_back_to_first_key():
 
     result = analyzer.analyze_ads([{"link": "x"}])
 
-    assert result[0].link == "x"
-    assert calls == ["key-1", "key-2", "key-3", "key-1"]
-
-
-def test_second_worker_rotates_keys_four_to_six_independently():
-    calls = []
-
-    def handler(key, kwargs):
-        link = parse_chunk_link(kwargs["contents"])
-        calls.append((key, link))
-        if key == "key-4":
-            raise RateLimitError("429")
-        return analysis_json(link)
-
-    analyzer = GeminiAnalyzer(
-        make_config(),
-        client_factory=lambda key: FakeClient(key, handler),
-    )
-    result = analyzer.analyze_ads([{"link": "a"}, {"link": "b"}])
-
-    assert [item.link for item in result] == ["a", "b"]
-    assert ("key-4", "b") in calls
-    assert ("key-5", "b") in calls
-    assert not any(key in {"key-1", "key-2", "key-3"} and link == "b" for key, link in calls)
+    assert [item.link for item in result] == ["x"]
+    assert calls == ["key-1", "key-1"]
+    assert sleeps == [1]
+    assert analyzer.client.models.key == "key-1"
 
 
 def test_non_rate_limit_errors_retry_same_key(monkeypatch):
@@ -222,20 +219,23 @@ def test_non_rate_limit_errors_retry_same_key(monkeypatch):
     assert sleeps == [1]
 
 
-def test_rate_limit_exhaustion_returns_empty_chunk():
+def test_rate_limit_exhaustion_returns_empty_chunk(monkeypatch):
     calls = []
+    sleeps = []
 
     def handler(key, kwargs):
         calls.append(key)
         raise RateLimitError("429")
 
+    monkeypatch.setattr("kufar_server_finder.gemini.time.sleep", sleeps.append)
     analyzer = GeminiAnalyzer(
-        make_config(max_retries=1),
+        make_config(max_retries=3),
         client_factory=lambda key: FakeClient(key, handler),
     )
 
     assert analyzer.analyze_ads([{"link": "x"}]) == []
-    assert calls == ["key-1", "key-2", "key-3"]
+    assert calls == ["key-1", "key-1", "key-1"]
+    assert sleeps == [1, 2]
 
 
 def test_invalid_or_empty_response_is_retried_then_skipped():
@@ -321,7 +321,7 @@ def test_vision_tasks_run_on_three_workers_concurrently(monkeypatch):
     )
 
     assert [item.link for item in result] == ["link-0", "link-1", "link-2"]
-    assert set(used_keys) == {"key-1", "key-4", "key-7"}
+    assert used_keys == ["key-1", "key-1", "key-1"]
 
 
 def test_vision_skips_ads_without_downloadable_images(monkeypatch):

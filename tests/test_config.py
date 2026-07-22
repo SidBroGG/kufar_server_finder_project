@@ -1,18 +1,13 @@
 import pytest
 
-from kufar_server_finder.config import (
-    GEMINI_API_KEY_ENV_NAMES,
-    GeminiConfig,
-)
+from kufar_server_finder.config import GeminiConfig
 
 
-def _set_all_keys(monkeypatch):
-    for index, name in enumerate(GEMINI_API_KEY_ENV_NAMES, start=1):
-        monkeypatch.setenv(name, f"key-{index}")
-
-
-def test_from_env_loads_nine_keys_and_builds_fixed_worker_groups(monkeypatch):
-    _set_all_keys(monkeypatch)
+def test_from_env_loads_single_key_workers_and_optional_http_options(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "main-key")
+    monkeypatch.setenv("GEMINI_WORKER_COUNT", "4")
+    monkeypatch.setenv("GEMINI_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("GEMINI_API_VERSION", "v1")
     monkeypatch.setenv("GEMINI_CHUNK_SIZE", "7")
     monkeypatch.setenv("GEMINI_SPECS_CHUNK_SIZE", "5")
     monkeypatch.setenv("GEMINI_REQUEST_DELAY", "0")
@@ -22,12 +17,10 @@ def test_from_env_loads_nine_keys_and_builds_fixed_worker_groups(monkeypatch):
 
     config = GeminiConfig.from_env()
 
-    assert config.api_keys == tuple(f"key-{index}" for index in range(1, 10))
-    assert config.worker_api_key_groups == (
-        ("key-1", "key-2", "key-3"),
-        ("key-4", "key-5", "key-6"),
-        ("key-7", "key-8", "key-9"),
-    )
+    assert config.api_key == "main-key"
+    assert config.worker_count == 4
+    assert config.base_url == "https://proxy.example"
+    assert config.api_version == "v1"
     assert config.chunk_size == 7
     assert config.specs_chunk_size == 5
     assert config.request_delay == 0
@@ -36,45 +29,60 @@ def test_from_env_loads_nine_keys_and_builds_fixed_worker_groups(monkeypatch):
     assert config.image_timeout == 12.5
 
 
-def test_from_env_rejects_missing_key(monkeypatch):
-    _set_all_keys(monkeypatch)
-    monkeypatch.delenv("GEMINI_API_KEY_8")
+def test_from_env_ignores_old_backup_key_variables(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "main-key")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "old-backup-key")
+    monkeypatch.setenv("GEMINI_API_KEY_9", "old-backup-key-9")
 
-    with pytest.raises(ValueError, match="GEMINI_API_KEY_8"):
-        GeminiConfig.from_env()
+    config = GeminiConfig.from_env()
 
-
-def test_from_env_rejects_duplicate_keys(monkeypatch):
-    _set_all_keys(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEY_9", "key-1")
-
-    with pytest.raises(ValueError, match="уникальными"):
-        GeminiConfig.from_env()
+    assert config.api_key == "main-key"
+    assert not hasattr(config, "backup_api_keys")
 
 
-def test_worker_groups_reject_invalid_direct_configuration():
-    config = GeminiConfig(api_key="one")
-    with pytest.raises(ValueError, match="ровно 9"):
-        _ = config.worker_api_key_groups
-
-    duplicate = GeminiConfig(
-        api_key="same",
-        backup_api_keys=("same",) * 8,
+def test_from_env_rejects_missing_single_key(monkeypatch):
+    # Изолируем тест от локального .env разработчика: иначе load_dotenv()
+    # восстановит удалённый GEMINI_API_KEY и проверка станет зависеть от окружения.
+    monkeypatch.setattr(
+        "kufar_server_finder.config.load_dotenv",
+        lambda: False,
     )
-    with pytest.raises(ValueError, match="уникальными"):
-        _ = duplicate.worker_api_key_groups
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        GeminiConfig.from_env()
+
+
+def test_optional_http_options_are_none_when_blank(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "main-key")
+    monkeypatch.setenv("GEMINI_BASE_URL", "   ")
+    monkeypatch.setenv("GEMINI_API_VERSION", "")
+
+    config = GeminiConfig.from_env()
+
+    assert config.base_url is None
+    assert config.api_version is None
+
+
+def test_direct_config_rejects_empty_key_and_worker_count():
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        GeminiConfig(api_key="   ")
+
+    with pytest.raises(ValueError, match="GEMINI_WORKER_COUNT"):
+        GeminiConfig(api_key="key", worker_count=0)
 
 
 @pytest.mark.parametrize(
     ("name", "value", "message"),
     [
+        ("GEMINI_WORKER_COUNT", "0", "больше нуля"),
         ("GEMINI_CHUNK_SIZE", "0", "больше нуля"),
         ("GEMINI_IMAGE_TIMEOUT", "0", "больше нуля"),
         ("GEMINI_REQUEST_DELAY", "-1", "не может быть отрицательным"),
     ],
 )
 def test_from_env_validates_numeric_options(monkeypatch, name, value, message):
-    _set_all_keys(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "main-key")
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=message):
