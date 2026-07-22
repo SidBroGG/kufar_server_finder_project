@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 from .benchmark import CpuBenchmarkDataset
 from .config import GeminiConfig, KufarConfig
@@ -90,7 +91,7 @@ def _add_extract_specs_argument(parser: argparse.ArgumentParser) -> None:
         dest="extract_specs",
         action="store_true",
         help=(
-            "Извлечь явно написанные CPU/ОЗУ и определить сокет по тексту или CPU"
+            "Извлечь явно написанные CPU/ОЗУ и определить сокет в том же AI-запросе"
         ),
     )
 
@@ -120,6 +121,18 @@ def _add_collect_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--region", default="7")
     parser.add_argument("--page-delay", type=float, default=1.0)
     parser.add_argument("--detail-delay", type=float, default=1.0)
+    parser.add_argument(
+        "--detail-workers",
+        type=int,
+        default=3,
+        help="Количество параллельных загрузчиков описаний",
+    )
+    parser.add_argument(
+        "--detail-retries",
+        type=int,
+        default=3,
+        help="Количество попыток загрузки описания при сетевой ошибке или 429",
+    )
     parser.add_argument("--timeout", type=float, default=20.0)
 
 
@@ -139,24 +152,52 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "analyze":
             ads = load_ads(args.input)
-            result = _analyze(ads, extract_specs=args.extract_specs)
-            result = _apply_benchmark(result, args.dataset)
+            pipeline = _build_pipeline()
+            try:
+                result = _analyze(
+                    ads,
+                    extract_specs=args.extract_specs,
+                    pipeline=pipeline,
+                )
+                result = _apply_benchmark(
+                    result,
+                    args.dataset,
+                    pipeline=pipeline,
+                )
+            finally:
+                _close_pipeline(pipeline)
             save_ads(args.output, result)
             logger.info("Результат сохранён: %s", args.output)
             return 0
 
         if args.command == "vision":
             ads = load_ads(args.input)
-            result = _vision(ads)
+            pipeline = _build_pipeline()
+            try:
+                result = _vision(ads, pipeline=pipeline)
+            finally:
+                _close_pipeline(pipeline)
             save_ads(args.output, result)
             logger.info("Результат фото-анализа сохранён: %s", args.output)
             return 0
 
         if args.command == "pipeline":
             ads = load_ads(args.input)
-            result = _analyze(ads, extract_specs=args.extract_specs)
-            result = _vision(result)
-            result = _apply_benchmark(result, args.dataset)
+            pipeline = _build_pipeline()
+            try:
+                result = _analyze(
+                    ads,
+                    extract_specs=args.extract_specs,
+                    pipeline=pipeline,
+                )
+                result = _vision(result, pipeline=pipeline)
+                result = _apply_benchmark(
+                    result,
+                    args.dataset,
+                    pipeline=pipeline,
+                )
+            finally:
+                _close_pipeline(pipeline)
             save_ads(args.output, result)
             export_ads_json_to_excel(args.output, args.excel_output)
             logger.info(
@@ -181,9 +222,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "run":
             ads = _collect(args)
             save_ads(args.raw_output, ads)
-            result = _analyze(ads, extract_specs=args.extract_specs)
-            result = _vision(result)
-            result = _apply_benchmark(result, args.dataset)
+            pipeline = _build_pipeline()
+            try:
+                result = _analyze(
+                    ads,
+                    extract_specs=args.extract_specs,
+                    pipeline=pipeline,
+                )
+                result = _vision(result, pipeline=pipeline)
+                result = _apply_benchmark(
+                    result,
+                    args.dataset,
+                    pipeline=pipeline,
+                )
+            finally:
+                _close_pipeline(pipeline)
             save_ads(args.output, result)
             export_ads_json_to_excel(args.output, args.excel_output)
             logger.info(
@@ -193,6 +246,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.excel_output,
             )
             return 0
+    except KeyboardInterrupt:
+        logger.warning("Операция прервана пользователем")
+        return 130
     except (ValueError, OSError) as exc:
         logger.error("%s", exc)
         return 2
@@ -209,13 +265,21 @@ def _collect(args: argparse.Namespace) -> list[dict]:
         request_timeout=args.timeout,
         page_delay=max(args.page_delay, 0),
         detail_delay=max(args.detail_delay, 0),
+        detail_workers=max(getattr(args, "detail_workers", 3), 1),
+        detail_max_retries=max(getattr(args, "detail_retries", 3), 1),
     )
-    return KufarClient(config).fetch_ads(
-        query=args.query,
-        computers_only=args.computers_only,
-        max_price=args.max_price,
-        load_descriptions=not args.no_descriptions,
-    )
+    client = KufarClient(config)
+    try:
+        return client.fetch_ads(
+            query=args.query,
+            computers_only=args.computers_only,
+            max_price=args.max_price,
+            load_descriptions=not args.no_descriptions,
+        )
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
 
 def _build_pipeline() -> AdPipeline:
@@ -225,27 +289,92 @@ def _build_pipeline() -> AdPipeline:
     return AdPipeline(GeminiAnalyzer(config))
 
 
-def _analyze(ads: list[dict], *, extract_specs: bool) -> list[dict]:
-    return _build_pipeline().filter_working_targets(ads, extract_specs=extract_specs)
+def _close_pipeline(pipeline: Any) -> None:
+    close = getattr(pipeline, "close", None)
+    if callable(close):
+        close()
 
 
-def _vision(ads: list[dict]) -> list[dict]:
-    return _build_pipeline().enrich_missing_specs_from_images(ads)
+def _analyze(
+    ads: list[dict],
+    *,
+    extract_specs: bool,
+    pipeline: AdPipeline | None = None,
+) -> list[dict]:
+    owns_pipeline = pipeline is None
+    active_pipeline = pipeline or _build_pipeline()
+    try:
+        return active_pipeline.filter_working_targets(
+            ads,
+            extract_specs=extract_specs,
+        )
+    finally:
+        if owns_pipeline:
+            _close_pipeline(active_pipeline)
 
 
-def _apply_benchmark(ads: list[dict], dataset_path: str | None) -> list[dict]:
+def _vision(
+    ads: list[dict],
+    *,
+    pipeline: AdPipeline | None = None,
+) -> list[dict]:
+    owns_pipeline = pipeline is None
+    active_pipeline = pipeline or _build_pipeline()
+    try:
+        return active_pipeline.enrich_missing_specs_from_images(ads)
+    finally:
+        if owns_pipeline:
+            _close_pipeline(active_pipeline)
+
+
+def _apply_benchmark(
+    ads: list[dict],
+    dataset_path: str | None,
+    *,
+    pipeline: AdPipeline | None = None,
+) -> list[dict]:
     if not dataset_path:
         return ads
 
     dataset = CpuBenchmarkDataset.from_csv(dataset_path)
-    normalized = _build_pipeline().normalize_cpu_models_for_benchmark(ads)
-    normalized_count = sum(
-        1 for ad in normalized if ad.get("cpu_model_normalized") is True
-    )
-    if normalized_count:
-        logger.info("AI нормализовал названия CPU: %s", normalized_count)
 
-    result = dataset.enrich_ads(normalized)
+    # Сначала дешёвый локальный поиск. В Gemini отправляются только несовпавшие CPU.
+    initially_enriched = dataset.enrich_ads(ads)
+    unmatched_indexes = [
+        index
+        for index, ad in enumerate(initially_enriched)
+        if ad.get("cpu_model") and "cpu_mark" not in ad
+    ]
+    unmatched = [initially_enriched[index] for index in unmatched_indexes]
+
+    if unmatched:
+        owns_pipeline = pipeline is None
+        active_pipeline = pipeline or _build_pipeline()
+        try:
+            normalized = active_pipeline.normalize_cpu_models_for_benchmark(
+                unmatched
+            )
+        finally:
+            if owns_pipeline:
+                _close_pipeline(active_pipeline)
+
+        normalized_count = sum(
+            1 for ad in normalized if ad.get("cpu_model_normalized") is True
+        )
+        if normalized_count:
+            logger.info("AI нормализовал названия CPU: %s", normalized_count)
+
+        enriched_unmatched = dataset.enrich_ads(normalized)
+        result = list(initially_enriched)
+        for index, enriched in zip(
+            unmatched_indexes,
+            enriched_unmatched,
+            strict=False,
+        ):
+            result[index] = enriched
+    else:
+        result = initially_enriched
+
     matched = sum(1 for ad in result if "cpu_mark" in ad)
     logger.info("Benchmark найден для %s из %s объявлений", matched, len(result))
     return result

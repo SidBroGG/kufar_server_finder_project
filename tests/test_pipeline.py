@@ -15,6 +15,8 @@ class FakeAnalyzer:
                 is_target=True,
                 is_working=True,
                 real_price=40,
+                cpu_model="Core i5-3470",
+                ram_gb=8,
             ),
             AdAnalysis(
                 link="https://example/broken",
@@ -123,13 +125,14 @@ def test_vision_adds_product_type_and_estimated_system_power():
 
 def test_text_socket_guess_has_priority_over_cpu_model_mapping():
     class DescriptionSocketAnalyzer(FakeAnalyzer):
-        def extract_explicit_specs(self, ads):
+        def analyze_ads(self, ads):
             return [
-                PCComponentSpec(
+                AdAnalysis(
                     link="https://example/working",
+                    is_target=True,
+                    is_working=True,
+                    real_price=40,
                     cpu_model="Core i5-3470",
-                    ram_type=None,
-                    ram_gb=None,
                     cpu_socket="LGA1150",
                     cpu_socket_source="description_guess",
                     cpu_socket_confidence="medium",
@@ -422,3 +425,36 @@ def test_cpu_name_normalization_rejects_changed_model_number():
     assert result[0]["cpu_model"] == "Intel core 2 quad q6600"
     assert "cpu_model_normalized" not in result[0]
 
+
+def test_filter_and_specs_use_single_analysis_call():
+    class CombinedAnalyzer(FakeAnalyzer):
+        def __init__(self):
+            self.analysis_calls = 0
+
+        def analyze_ads(self, ads):
+            self.analysis_calls += 1
+            return [
+                AdAnalysis(
+                    link="https://example/working",
+                    is_target=True,
+                    is_working=True,
+                    real_price=10,
+                    cpu_model="Intel Core i5-3470",
+                    ram_type="DDR3",
+                    ram_gb=8,
+                )
+            ]
+
+        def extract_explicit_specs(self, ads):
+            raise AssertionError("Отдельный specs-запрос не должен выполняться")
+
+    analyzer = CombinedAnalyzer()
+    result = AdPipeline(analyzer).filter_working_targets(
+        [{"link": "https://example/working", "price": 12}],
+        extract_specs=True,
+    )
+
+    assert analyzer.analysis_calls == 1
+    assert result[0]["cpu_model"] == "Intel Core i5-3470"
+    assert result[0]["ram_type"] == "DDR3"
+    assert result[0]["ram_gb"] == 8

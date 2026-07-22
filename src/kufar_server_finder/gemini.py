@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ class _GeminiWorker:
     number: int
     client: Any
     image_session: requests.Session
+    has_executed_task: bool = False
 
 
 class GeminiAnalyzer:
@@ -75,6 +77,23 @@ class GeminiAnalyzer:
             )
             for index, worker_client in enumerate(clients)
         )
+        self._available_workers: queue.Queue[_GeminiWorker] = queue.Queue()
+        for worker in self._workers:
+            self._available_workers.put(worker)
+
+        # Пулы создаются один раз и переиспользуются всеми этапами pipeline.
+        self._task_executor = ThreadPoolExecutor(
+            max_workers=len(self._workers),
+            thread_name_prefix="gemini-worker",
+        )
+        self._image_executor = ThreadPoolExecutor(
+            max_workers=max(
+                1,
+                len(self._workers) * self.config.image_download_workers,
+            ),
+            thread_name_prefix="gemini-image",
+        )
+        self._closed = False
 
     @property
     def worker_count(self) -> int:
@@ -88,6 +107,37 @@ class GeminiAnalyzer:
     def client(self) -> Any:
         """Совместимость: клиент первого worker."""
         return self._workers[0].client
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._task_executor.shutdown(wait=True, cancel_futures=False)
+        self._image_executor.shutdown(wait=True, cancel_futures=False)
+
+        closed_sessions: set[int] = set()
+        for worker in self._workers:
+            session_id = id(worker.image_session)
+            if session_id in closed_sessions:
+                continue
+            closed_sessions.add(session_id)
+            close = getattr(worker.image_session, "close", None)
+            if callable(close):
+                close()
+
+    def __enter__(self) -> "GeminiAnalyzer":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            if not getattr(self, "_closed", True):
+                self._task_executor.shutdown(wait=False, cancel_futures=True)
+                self._image_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     def _create_client(self, api_key: str) -> genai.Client:
         http_options_values: dict[str, str] = {}
@@ -108,19 +158,22 @@ class GeminiAnalyzer:
         return self._process_chunks(
             payload=payload,
             chunk_size=self.config.chunk_size,
+            max_chunk_chars=self.config.max_chunk_chars,
             model=self.config.analysis_model,
             instruction=ANALYSIS_SYSTEM_INSTRUCTION,
             response_model=AdAnalysis,
-            prompt_prefix="Проанализируй объявления",
+            prompt_prefix="Проанализируй объявления и извлеки характеристики",
         )
 
     def extract_explicit_specs(
         self, ads: list[dict[str, Any]]
     ) -> list[PCComponentSpec]:
+        """Совместимость для отдельного вызова; основной pipeline использует analyze_ads."""
         payload = [self._specs_payload(ad) for ad in ads]
         return self._process_chunks(
             payload=payload,
             chunk_size=self.config.specs_chunk_size,
+            max_chunk_chars=self.config.specs_max_chunk_chars,
             model=self.config.specs_model,
             instruction=SPECS_SYSTEM_INSTRUCTION,
             response_model=PCComponentSpec,
@@ -145,6 +198,7 @@ class GeminiAnalyzer:
         return self._process_chunks(
             payload=payload,
             chunk_size=self.config.specs_chunk_size,
+            max_chunk_chars=self.config.specs_max_chunk_chars,
             model=self.config.specs_model,
             instruction=CPU_NAME_NORMALIZATION_SYSTEM_INSTRUCTION,
             response_model=CpuNameNormalization,
@@ -215,6 +269,7 @@ class GeminiAnalyzer:
         *,
         payload: list[dict[str, Any]],
         chunk_size: int,
+        max_chunk_chars: int,
         model: str,
         instruction: str,
         response_model: type[ModelT],
@@ -224,10 +279,11 @@ class GeminiAnalyzer:
             return []
 
         total = len(payload)
-        tasks = [
-            (start, payload[start : start + chunk_size])
-            for start in range(0, total, chunk_size)
-        ]
+        tasks = self._build_adaptive_chunks(
+            payload,
+            max_items=chunk_size,
+            max_chars=max_chunk_chars,
+        )
 
         def process(
             worker: _GeminiWorker,
@@ -259,6 +315,45 @@ class GeminiAnalyzer:
             result.extend(chunk_result)
         return result
 
+    @staticmethod
+    def _build_adaptive_chunks(
+        payload: list[dict[str, Any]],
+        *,
+        max_items: int,
+        max_chars: int,
+    ) -> list[tuple[int, list[dict[str, Any]]]]:
+        chunks: list[tuple[int, list[dict[str, Any]]]] = []
+        current: list[dict[str, Any]] = []
+        current_chars = 2  # []
+        current_start = 0
+
+        for index, item in enumerate(payload):
+            item_chars = len(
+                json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            separator_chars = 1 if current else 0
+            exceeds_count = len(current) >= max_items
+            exceeds_chars = current and (
+                current_chars + separator_chars + item_chars > max_chars
+            )
+            if exceeds_count or exceeds_chars:
+                chunks.append((current_start, current))
+                current = []
+                current_chars = 2
+                current_start = index
+                separator_chars = 0
+
+            current.append(item)
+            current_chars += separator_chars + item_chars
+
+        if current:
+            chunks.append((current_start, current))
+        return chunks
+
     def _run_parallel(
         self,
         tasks: list[TaskT],
@@ -268,55 +363,40 @@ class GeminiAnalyzer:
     ) -> list[ResultT]:
         if not tasks:
             return []
+        if self._closed:
+            raise RuntimeError("GeminiAnalyzer уже закрыт")
 
-        executors = [
-            ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix=f"gemini-worker-{worker.number}",
+        futures: list[Future[ResultT]] = [
+            self._task_executor.submit(
+                self._execute_queued_task,
+                task,
+                operation,
             )
-            for worker in self._workers
+            for task in tasks
         ]
-        futures: list[Future[ResultT]] = []
-        submitted_per_worker = [0] * len(self._workers)
 
-        try:
-            for index, task in enumerate(tasks):
-                worker_index = index % len(self._workers)
-                worker = self._workers[worker_index]
-                should_delay = submitted_per_worker[worker_index] > 0
-                submitted_per_worker[worker_index] += 1
-                futures.append(
-                    executors[worker_index].submit(
-                        self._execute_worker_task,
-                        worker,
-                        task,
-                        should_delay,
-                        operation,
-                    )
-                )
+        result: list[ResultT] = []
+        for future in futures:
+            try:
+                result.append(future.result())
+            except Exception as exc:
+                logger.exception("Необработанная ошибка Gemini worker: %s", exc)
+                result.append(fallback())
+        return result
 
-            result: list[ResultT] = []
-            for future in futures:
-                try:
-                    result.append(future.result())
-                except Exception as exc:
-                    logger.exception("Необработанная ошибка Gemini worker: %s", exc)
-                    result.append(fallback())
-            return result
-        finally:
-            for executor in executors:
-                executor.shutdown(wait=True, cancel_futures=False)
-
-    def _execute_worker_task(
+    def _execute_queued_task(
         self,
-        worker: _GeminiWorker,
         task: TaskT,
-        should_delay: bool,
         operation: Callable[[_GeminiWorker, TaskT], ResultT],
     ) -> ResultT:
-        if should_delay and self.config.request_delay:
-            time.sleep(self.config.request_delay)
-        return operation(worker, task)
+        worker = self._available_workers.get()
+        try:
+            if worker.has_executed_task and self.config.request_delay:
+                time.sleep(self.config.request_delay)
+            worker.has_executed_task = True
+            return operation(worker, task)
+        finally:
+            self._available_workers.put(worker)
 
     def _generate_structured_list(
         self,
@@ -387,7 +467,11 @@ class GeminiAnalyzer:
                 return adapter.validate_python(json.loads(response.text))
             except Exception as exc:  # SDK выбрасывает несколько типов ошибок
                 last_error = exc
-                error_name = "Gemini 429" if self._is_rate_limit_error(exc) else "ошибка Gemini"
+                error_name = (
+                    "Gemini 429"
+                    if self._is_rate_limit_error(exc)
+                    else "ошибка Gemini"
+                )
                 logger.warning(
                     "Worker %s: %s, попытка %s/%s: %s",
                     worker.number,
@@ -427,38 +511,55 @@ class GeminiAnalyzer:
         *,
         image_session: requests.Session | None = None,
     ) -> list[types.Part]:
-        parts: list[types.Part] = []
-        image_urls = ad.get("images") or []
         session = image_session or self._workers[0].image_session
+        image_urls = [
+            url
+            for url in (ad.get("images") or [])[: self.config.vision_max_images]
+            if isinstance(url, str) and url.startswith(("http://", "https://"))
+        ]
+        futures = [
+            self._image_executor.submit(
+                self._download_single_image_part,
+                session,
+                url,
+            )
+            for url in image_urls
+        ]
 
-        for url in image_urls[: self.config.vision_max_images]:
-            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-                continue
-            try:
-                response = session.get(
-                    url,
-                    timeout=self.config.image_timeout,
-                )
-                response.raise_for_status()
-                mime_type = response.headers.get("Content-Type", "").split(";", 1)[0]
-                mime_type = mime_type.strip().lower()
-                if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
-                    logger.warning(
-                        "Неподдерживаемый формат изображения %s: %s",
-                        url,
-                        mime_type,
-                    )
-                    continue
-                parts.append(
-                    types.Part.from_bytes(
-                        data=response.content,
-                        mime_type=mime_type,
-                    )
-                )
-            except requests.RequestException as exc:
-                logger.warning("Не удалось загрузить фото %s: %s", url, exc)
-
+        parts: list[types.Part] = []
+        for future in futures:
+            part = future.result()
+            if part is not None:
+                parts.append(part)
         return parts
+
+    def _download_single_image_part(
+        self,
+        session: requests.Session,
+        url: str,
+    ) -> types.Part | None:
+        try:
+            response = session.get(
+                url,
+                timeout=self.config.image_timeout,
+            )
+            response.raise_for_status()
+            mime_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+            mime_type = mime_type.strip().lower()
+            if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+                logger.warning(
+                    "Неподдерживаемый формат изображения %s: %s",
+                    url,
+                    mime_type,
+                )
+                return None
+            return types.Part.from_bytes(
+                data=response.content,
+                mime_type=mime_type,
+            )
+        except requests.RequestException as exc:
+            logger.warning("Не удалось загрузить фото %s: %s", url, exc)
+            return None
 
     def _analysis_payload(self, ad: dict[str, Any]) -> dict[str, Any]:
         return {

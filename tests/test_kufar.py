@@ -117,10 +117,20 @@ import pytest
 
 
 class FakeResponse:
-    def __init__(self, *, payload=None, text="", error=None):
+    def __init__(
+        self,
+        *,
+        payload=None,
+        text="",
+        error=None,
+        status_code=200,
+        headers=None,
+    ):
         self._payload = payload
         self.text = text
         self.error = error
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.error:
@@ -198,6 +208,8 @@ def test_get_json_and_fetch_description(monkeypatch):
             FakeResponse(text='<div itemprop="description">A<br>B</div>'),
             FakeResponse(text="<html></html>"),
             FakeResponse(error=requests.RequestException("network")),
+            FakeResponse(error=requests.RequestException("network")),
+            FakeResponse(error=requests.RequestException("network")),
         ]
     )
     client = KufarClient(
@@ -254,3 +266,135 @@ def test_price_and_cursor_edge_cases():
     assert KufarClient._extract_next_cursor(
         {"pagination": {"pages": [{"label": "prev", "token": "x"}]}}
     ) is None
+
+
+def test_descriptions_are_loaded_in_parallel():
+    import threading
+
+    barrier = threading.Barrier(3)
+
+    class ParallelDescriptionClient(KufarClient):
+        def __init__(self):
+            super().__init__(
+                KufarConfig(
+                    page_delay=0,
+                    detail_delay=0,
+                    detail_workers=3,
+                )
+            )
+            self.thread_names = []
+
+        def _get_json(self, url, **kwargs):
+            return {
+                "ads": [
+                    {
+                        "ad_link": f"https://example/{index}",
+                        "price_byn": str(index * 100),
+                    }
+                    for index in range(1, 4)
+                ],
+                "pagination": {"pages": []},
+            }
+
+        def _fetch_description(self, link):
+            self.thread_names.append(threading.current_thread().name)
+            barrier.wait(timeout=2)
+            return f"Описание {link.rsplit('/', 1)[-1]}"
+
+    client = ParallelDescriptionClient()
+    executor_id = id(client._detail_executor)
+    try:
+        result = client.fetch_ads(max_price=10, load_descriptions=True)
+    finally:
+        client.close()
+
+    assert [ad["description"] for ad in result] == [
+        "Описание 1",
+        "Описание 2",
+        "Описание 3",
+    ]
+    assert all(ad["description_status"] == "loaded" for ad in result)
+    assert len(set(client.thread_names)) == 3
+    assert id(client._detail_executor) == executor_id
+    client.close()
+
+
+def test_kufar_context_manager_and_description_failure():
+    client = KufarClient(KufarConfig(page_delay=0, detail_delay=0))
+    ad = {"link": "https://example", "description": "old"}
+
+    with client as active:
+        assert active is client
+        active._apply_description_result(ad, None)
+
+    assert ad["description_status"] == "load_error"
+    assert ad["description_load_error"] is True
+    assert client._closed is True
+
+
+def test_rate_limit_circuit_breaker_stops_description_requests(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(status_code=429),
+            FakeResponse(status_code=429),
+        ]
+    )
+    client = KufarClient(
+        KufarConfig(
+            page_delay=0,
+            detail_delay=0,
+            detail_workers=1,
+            detail_max_retries=3,
+            rate_limit_threshold=2,
+        ),
+        session=session,
+    )
+    monkeypatch.setattr(client, "_wait_for_detail_slot", lambda: True)
+
+    assert client._fetch_description("https://example/item") is None
+    assert client._descriptions_disabled.is_set()
+    assert len(session.calls) == 2
+    client.close()
+
+
+def test_rate_limit_retry_can_recover(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(status_code=429, headers={"Retry-After": "0"}),
+            FakeResponse(text='<div itemprop="description">OK</div>'),
+        ]
+    )
+    client = KufarClient(
+        KufarConfig(
+            page_delay=0,
+            detail_delay=0,
+            detail_workers=1,
+            detail_max_retries=2,
+            rate_limit_threshold=3,
+        ),
+        session=session,
+    )
+    monkeypatch.setattr(client, "_wait_for_detail_slot", lambda: True)
+
+    assert client._fetch_description("https://example/item") == "OK"
+    assert not client._descriptions_disabled.is_set()
+    client.close()
+
+
+def test_abort_makes_close_non_blocking():
+    class FakeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def shutdown(self, **kwargs):
+            self.calls.append(kwargs)
+
+    client = KufarClient(KufarConfig(page_delay=0, detail_delay=0))
+    client._detail_executor.shutdown(wait=True, cancel_futures=True)
+    fake_executor = FakeExecutor()
+    client._detail_executor = fake_executor
+
+    client.abort()
+    client.close()
+
+    assert fake_executor.calls == [{"wait": False, "cancel_futures": True}]

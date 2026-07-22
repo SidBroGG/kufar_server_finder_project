@@ -28,6 +28,12 @@ class AdAnalysis(_StrictResponseModel):
     is_target: bool
     is_working: bool
     real_price: float = Field(default=0, ge=0)
+    cpu_model: str | None = None
+    ram_type: str | None = None
+    ram_gb: int | None = Field(default=None, ge=0)
+    cpu_socket: str | None = None
+    cpu_socket_source: SocketTextSource | None = None
+    cpu_socket_confidence: Confidence | None = None
 
 
 class PCComponentSpec(_StrictResponseModel):

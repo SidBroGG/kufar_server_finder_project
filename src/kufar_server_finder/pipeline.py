@@ -141,6 +141,17 @@ class AdPipeline:
     def __init__(self, analyzer: AdsAnalyzer) -> None:
         self.analyzer = analyzer
 
+    def close(self) -> None:
+        close = getattr(self.analyzer, "close", None)
+        if callable(close):
+            close()
+
+    def __enter__(self) -> "AdPipeline":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
     def filter_working_targets(
         self,
         ads: list[dict[str, Any]],
@@ -195,7 +206,7 @@ class AdPipeline:
             filtered.append(item)
 
         if extract_specs and filtered:
-            self._merge_explicit_specs(filtered)
+            self._merge_analysis_specs(filtered, analyses_by_link)
         self._infer_sockets_from_cpu_models(filtered)
 
         logger.info(
@@ -258,6 +269,26 @@ class AdPipeline:
             ad.pop("cpu_benchmark_source", None)
 
         return result
+
+    def _merge_analysis_specs(
+        self,
+        ads: list[dict[str, Any]],
+        analyses_by_link: dict[Any, AdAnalysis],
+    ) -> None:
+        """Объединяет фильтрацию и извлечение характеристик одним AI-ответом."""
+        for ad in ads:
+            analysis = analyses_by_link.get(ad.get("link"))
+            if analysis is None:
+                continue
+            self._set_exact_value(ad, "cpu_model", analysis.cpu_model)
+            self._set_exact_value(ad, "ram_type", analysis.ram_type)
+            self._set_exact_value(ad, "ram_gb", analysis.ram_gb)
+            self._set_text_socket(
+                ad,
+                analysis.cpu_socket,
+                analysis.cpu_socket_source,
+                analysis.cpu_socket_confidence,
+            )
 
     def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
         specs_by_link = {
@@ -498,4 +529,3 @@ def _same_cpu_identity(current: str, proposed: str) -> bool:
     current_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(current)}
     proposed_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(proposed)}
     return bool(current_ids) and current_ids == proposed_ids
-

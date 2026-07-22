@@ -41,15 +41,26 @@ GEMINI_SPECS_MODEL=gemini-3.1-flash-lite
 GEMINI_VISION_MODEL=gemini-3.1-flash-lite
 GEMINI_CHUNK_SIZE=30
 GEMINI_SPECS_CHUNK_SIZE=25
+GEMINI_MAX_CHUNK_CHARS=25000
+GEMINI_SPECS_MAX_CHUNK_CHARS=20000
 GEMINI_REQUEST_DELAY=1
 GEMINI_MAX_RETRIES=3
 GEMINI_VISION_MAX_IMAGES=5
+GEMINI_IMAGE_DOWNLOAD_WORKERS=3
 GEMINI_IMAGE_TIMEOUT=20
 ```
 
-`GEMINI_WORKER_COUNT` задаёт количество параллельных AI worker. Значение должно
-быть больше нуля. Большое количество worker может быстрее исчерпать лимит одного
-API-ключа.
+`GEMINI_WORKER_COUNT` задаёт количество параллельных AI worker. Задания
+распределяются динамически: освободившийся worker сразу берёт следующую задачу.
+Executors и Gemini-клиенты переиспользуются между этапами одного pipeline. Значение
+должно быть больше нуля. Большое количество worker может быстрее исчерпать лимит
+одного API-ключа.
+
+`GEMINI_MAX_CHUNK_CHARS` и `GEMINI_SPECS_MAX_CHUNK_CHARS` ограничивают не
+только количество объявлений, но и примерный размер JSON в одном запросе.
+
+`GEMINI_IMAGE_DOWNLOAD_WORKERS` задаёт число параллельных загрузок фотографий на
+один AI worker.
 
 `GEMINI_REQUEST_DELAY` задаёт задержку между последовательными задачами одного
 worker. `GEMINI_MAX_RETRIES` — максимальное число попыток одного запроса, включая
@@ -70,11 +81,11 @@ GEMINI_API_VERSION=v1beta
 ### Сбор объявлений
 
 ```powershell
-python -m kufar_server_finder collect --computers-only --max-price 50 --output output_unfiltered.json
+python -m kufar_server_finder collect --computers-only --max-price 50 --detail-workers 3 --detail-delay 1.5 --output output_unfiltered.json
 ```
 
 `--computers-only` включает категории компьютеров и ноутбуков. `--max-price`
-передаётся в API Kufar и дополнительно проверяется локально.
+передаётся в API Kufar и дополнительно проверяется локально. `--detail-workers` задаёт число загрузчиков описаний. Между всеми запросами действует общий `--detail-delay`, поэтому потоки не создают резкий burst. При повторяющихся ответах 429 загрузка описаний автоматически прекращается, а pipeline продолжает работу. Для полного отключения используйте `--no-descriptions`.
 
 ### Анализ текста
 
@@ -103,8 +114,12 @@ python -m kufar_server_finder pipeline --input output_unfiltered.json --output o
 Порядок этапов:
 
 ```text
-analyze -> vision -> benchmark -> JSON -> Excel
+analyze+extract-specs -> vision -> local benchmark -> AI normalize unmatched -> JSON -> Excel
 ```
+
+Фильтрация и извлечение текстовых характеристик выполняются одним Gemini-запросом.
+Перед AI-нормализацией CPU сначала выполняется локальный поиск benchmark; в Gemini
+отправляются только несовпавшие модели.
 
 Если `--dataset` не указан, этап CPU Benchmark пропускается.
 

@@ -394,3 +394,146 @@ def test_payloads_trim_descriptions_and_parallel_fallback_handles_exception():
         operation=lambda worker, task: (_ for _ in ()).throw(RuntimeError("boom")),
         fallback=lambda: 99,
     ) == [99]
+
+
+def test_dynamic_scheduler_gives_next_task_to_free_worker():
+    first_started = threading.Event()
+    fourth_started = threading.Event()
+
+    def handler(key, kwargs):
+        link = parse_chunk_link(kwargs["contents"])
+        if link == "link-1":
+            first_started.set()
+            assert fourth_started.wait(timeout=2)
+        elif link == "link-4":
+            assert first_started.wait(timeout=2)
+            fourth_started.set()
+        return analysis_json(link)
+
+    analyzer = GeminiAnalyzer(
+        make_config(worker_count=3, chunk_size=1),
+        client_factory=lambda key: FakeClient(key, handler),
+    )
+    try:
+        result = analyzer.analyze_ads(
+            [{"link": f"link-{index}"} for index in range(1, 5)]
+        )
+    finally:
+        analyzer.close()
+
+    assert [item.link for item in result] == [
+        "link-1",
+        "link-2",
+        "link-3",
+        "link-4",
+    ]
+
+
+def test_image_downloads_run_in_parallel_and_keep_order():
+    barrier = threading.Barrier(3)
+
+    class ParallelImageSession:
+        def __init__(self):
+            self.headers = {}
+            self.thread_names = []
+
+        def get(self, url, timeout):
+            self.thread_names.append(threading.current_thread().name)
+            barrier.wait(timeout=2)
+            return FakeImageResponse(content=url.encode())
+
+    session = ParallelImageSession()
+    analyzer = GeminiAnalyzer(
+        make_config(
+            worker_count=1,
+            image_download_workers=3,
+            vision_max_images=3,
+        ),
+        client=FakeClient("single", lambda key, kwargs: "[]"),
+        image_session=session,
+    )
+    try:
+        parts = analyzer._download_image_parts(
+            {
+                "images": [
+                    "https://example/1.jpg",
+                    "https://example/2.jpg",
+                    "https://example/3.jpg",
+                ]
+            }
+        )
+    finally:
+        analyzer.close()
+
+    payloads = [
+        getattr(part, "data", None)
+        or getattr(getattr(part, "inline_data", None), "data", None)
+        for part in parts
+    ]
+    assert payloads == [
+        b"https://example/1.jpg",
+        b"https://example/2.jpg",
+        b"https://example/3.jpg",
+    ]
+    assert len(set(session.thread_names)) == 3
+
+
+def test_adaptive_chunks_limit_items_and_serialized_characters():
+    payload = [
+        {"link": "1", "description": "a" * 20},
+        {"link": "2", "description": "b" * 20},
+        {"link": "3", "description": "c"},
+    ]
+
+    by_count = GeminiAnalyzer._build_adaptive_chunks(
+        payload,
+        max_items=2,
+        max_chars=10_000,
+    )
+    by_chars = GeminiAnalyzer._build_adaptive_chunks(
+        payload,
+        max_items=10,
+        max_chars=60,
+    )
+
+    assert [(start, len(chunk)) for start, chunk in by_count] == [(0, 2), (2, 1)]
+    assert [(start, len(chunk)) for start, chunk in by_chars] == [
+        (0, 1),
+        (1, 1),
+        (2, 1),
+    ]
+
+
+def test_executors_are_reused_and_context_manager_closes_analyzer():
+    def handler(key, kwargs):
+        contents = kwargs["contents"]
+        link = parse_chunk_link(contents)
+        if contents.startswith("Нормализуй"):
+            return json.dumps(
+                [{"link": link, "normalized_cpu_model": "Intel Core i5-3470"}]
+            )
+        return analysis_json(link)
+
+    analyzer = GeminiAnalyzer(
+        make_config(worker_count=1),
+        client_factory=lambda key: FakeClient(key, handler),
+    )
+    executor_id = id(analyzer._task_executor)
+
+    with analyzer as active:
+        assert active is analyzer
+        assert analyzer.analyze_ads([{"link": "x"}])[0].link == "x"
+        assert analyzer.normalize_cpu_names(
+            [{"link": "x", "cpu_model": "i5 3470"}]
+        )[0].normalized_cpu_model == "Intel Core i5-3470"
+        assert id(analyzer._task_executor) == executor_id
+        assert analyzer.analyze_ads([]) == []
+
+    assert analyzer._closed is True
+    analyzer.close()  # повторное закрытие безопасно
+    with pytest.raises(RuntimeError, match="закрыт"):
+        analyzer._run_parallel(
+            [1],
+            operation=lambda worker, task: task,
+            fallback=lambda: 0,
+        )

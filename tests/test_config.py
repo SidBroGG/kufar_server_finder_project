@@ -1,6 +1,6 @@
 import pytest
 
-from kufar_server_finder.config import GeminiConfig
+from kufar_server_finder.config import GeminiConfig, KufarConfig
 
 
 def test_from_env_loads_single_key_workers_and_optional_http_options(monkeypatch):
@@ -14,6 +14,9 @@ def test_from_env_loads_single_key_workers_and_optional_http_options(monkeypatch
     monkeypatch.setenv("GEMINI_MAX_RETRIES", "4")
     monkeypatch.setenv("GEMINI_VISION_MAX_IMAGES", "6")
     monkeypatch.setenv("GEMINI_IMAGE_TIMEOUT", "12.5")
+    monkeypatch.setenv("GEMINI_MAX_CHUNK_CHARS", "9000")
+    monkeypatch.setenv("GEMINI_SPECS_MAX_CHUNK_CHARS", "7000")
+    monkeypatch.setenv("GEMINI_IMAGE_DOWNLOAD_WORKERS", "4")
 
     config = GeminiConfig.from_env()
 
@@ -27,6 +30,9 @@ def test_from_env_loads_single_key_workers_and_optional_http_options(monkeypatch
     assert config.max_retries == 4
     assert config.vision_max_images == 6
     assert config.image_timeout == 12.5
+    assert config.max_chunk_chars == 9000
+    assert config.specs_max_chunk_chars == 7000
+    assert config.image_download_workers == 4
 
 
 def test_from_env_ignores_old_backup_key_variables(monkeypatch):
@@ -87,3 +93,20 @@ def test_from_env_validates_numeric_options(monkeypatch, name, value, message):
 
     with pytest.raises(ValueError, match=message):
         GeminiConfig.from_env()
+
+
+def test_direct_config_validates_new_parallel_and_chunk_options():
+    with pytest.raises(ValueError, match="GEMINI_MAX_CHUNK_CHARS"):
+        GeminiConfig(api_key="key", max_chunk_chars=0)
+    with pytest.raises(ValueError, match="GEMINI_REQUEST_DELAY"):
+        GeminiConfig(api_key="key", request_delay=-1)
+    with pytest.raises(ValueError, match="GEMINI_IMAGE_TIMEOUT"):
+        GeminiConfig(api_key="key", image_timeout=0)
+    with pytest.raises(ValueError, match="KUFAR_DETAIL_WORKERS"):
+        KufarConfig(detail_workers=0)
+    with pytest.raises(ValueError, match="KUFAR_DETAIL_MAX_RETRIES"):
+        KufarConfig(detail_max_retries=0)
+    with pytest.raises(ValueError, match="KUFAR_RATE_LIMIT_THRESHOLD"):
+        KufarConfig(rate_limit_threshold=0)
+    with pytest.raises(ValueError, match="KUFAR_DETAIL_DELAY"):
+        KufarConfig(detail_delay=-1)

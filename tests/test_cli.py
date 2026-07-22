@@ -27,15 +27,28 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     json_path = tmp_path / "output.json"
     excel_path = tmp_path / "output.xlsx"
     calls = []
+    pipeline_builds = []
+    shared_pipeline = object()
 
+    monkeypatch.setattr(
+        cli,
+        "_build_pipeline",
+        lambda: pipeline_builds.append(shared_pipeline) or shared_pipeline,
+    )
     monkeypatch.setattr(cli, "_collect", lambda args: [{"link": "x"}])
     monkeypatch.setattr(
         cli,
         "_analyze",
-        lambda ads, *, extract_specs: [{"link": "x", "price": 10}],
+        lambda ads, *, extract_specs, pipeline=None: [
+            {"link": "x", "price": 10}
+        ],
     )
-    monkeypatch.setattr(cli, "_vision", lambda ads: ads)
-    monkeypatch.setattr(cli, "_apply_benchmark", lambda ads, dataset: ads)
+    monkeypatch.setattr(cli, "_vision", lambda ads, *, pipeline=None: ads)
+    monkeypatch.setattr(
+        cli,
+        "_apply_benchmark",
+        lambda ads, dataset, *, pipeline=None: ads,
+    )
     monkeypatch.setattr(
         cli,
         "export_ads_json_to_excel",
@@ -62,6 +75,7 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
     assert calls == [(str(json_path), str(excel_path))]
     assert raw_path.exists()
     assert json_path.exists()
+    assert pipeline_builds == [shared_pipeline]
 
 def test_new_commands_parse():
     parser = build_parser()
@@ -113,6 +127,8 @@ def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path)
     excel_path = tmp_path / "final.xlsx"
     save_ads(input_path, [{"link": "x"}])
     calls = []
+    shared_pipeline = object()
+    monkeypatch.setattr(cli, "_build_pipeline", lambda: shared_pipeline)
 
     monkeypatch.setattr(
         cli,
@@ -122,19 +138,21 @@ def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path)
     monkeypatch.setattr(
         cli,
         "_analyze",
-        lambda ads, *, extract_specs: [
+        lambda ads, *, extract_specs, pipeline=None: [
             {"link": "x", "stage": "analyze", "extract_specs": extract_specs}
         ],
     )
     monkeypatch.setattr(
         cli,
         "_vision",
-        lambda ads: [{**ads[0], "stage": "vision"}],
+        lambda ads, *, pipeline=None: [{**ads[0], "stage": "vision"}],
     )
     monkeypatch.setattr(
         cli,
         "_apply_benchmark",
-        lambda ads, dataset: [{**ads[0], "dataset": dataset}],
+        lambda ads, dataset, *, pipeline=None: [
+            {**ads[0], "dataset": dataset}
+        ],
     )
     monkeypatch.setattr(
         cli,
@@ -236,15 +254,21 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
     analyze_output = tmp_path / "analyze.json"
     vision_output = tmp_path / "vision.json"
     save_ads(input_path, [{"link": "x"}])
+    shared_pipeline = object()
+    monkeypatch.setattr(cli, "_build_pipeline", lambda: shared_pipeline)
     monkeypatch.setattr(
         cli,
         "_analyze",
-        lambda ads, *, extract_specs: [{**ads[0], "extract": extract_specs}],
+        lambda ads, *, extract_specs, pipeline=None: [
+            {**ads[0], "extract": extract_specs}
+        ],
     )
     monkeypatch.setattr(
         cli,
         "_apply_benchmark",
-        lambda ads, dataset: [{**ads[0], "dataset": dataset}],
+        lambda ads, dataset, *, pipeline=None: [
+            {**ads[0], "dataset": dataset}
+        ],
     )
     assert cli.main(
         [
@@ -260,7 +284,11 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
     ) == 0
     assert load_ads(analyze_output)[0]["extract"] is True
 
-    monkeypatch.setattr(cli, "_vision", lambda ads: [{**ads[0], "vision": True}])
+    monkeypatch.setattr(
+        cli,
+        "_vision",
+        lambda ads, *, pipeline=None: [{**ads[0], "vision": True}],
+    )
     assert cli.main(
         ["vision", "--input", str(input_path), "--output", str(vision_output)]
     ) == 0
@@ -275,6 +303,9 @@ def test_main_returns_expected_error_codes(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "_collect", lambda args: (_ for _ in ()).throw(RuntimeError("boom")))
     assert cli.main(["collect", "--output", str(tmp_path / "x.json")]) == 1
+
+    monkeypatch.setattr(cli, "_collect", lambda args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    assert cli.main(["collect", "--output", str(tmp_path / "x.json")]) == 130
 
 
 def test_collect_builds_kufar_config_and_forwards_arguments(monkeypatch):
@@ -296,6 +327,8 @@ def test_collect_builds_kufar_config_and_forwards_arguments(monkeypatch):
         timeout=9,
         page_delay=-1,
         detail_delay=-2,
+        detail_workers=2,
+        detail_retries=4,
         query="pc",
         computers_only=True,
         max_price=20,
@@ -306,6 +339,8 @@ def test_collect_builds_kufar_config_and_forwards_arguments(monkeypatch):
     assert captured["config"].region == "5"
     assert captured["config"].page_delay == 0
     assert captured["config"].detail_delay == 0
+    assert captured["config"].detail_workers == 2
+    assert captured["config"].detail_max_retries == 4
     assert captured["kwargs"] == {
         "query": "pc",
         "computers_only": True,
@@ -341,25 +376,72 @@ def test_build_pipeline_creates_analyzer(monkeypatch):
     assert pipeline.analyzer is analyzer
 
 
-def test_apply_benchmark_skips_or_enriches(monkeypatch):
+def test_apply_benchmark_uses_local_match_before_ai(monkeypatch):
     from kufar_server_finder import cli
 
     ads = [{"link": "x", "cpu_model": "CPU"}]
     assert cli._apply_benchmark(ads, None) is ads
 
-    class FakeDataset:
+    class LocalDataset:
         def enrich_ads(self, values):
-            return [{**values[0], "cpu_mark": 10}]
-
-    class FakePipeline:
-        def normalize_cpu_models_for_benchmark(self, values):
-            return [{**values[0], "cpu_model_normalized": True}]
+            return [{**value, "cpu_mark": 10} for value in values]
 
     monkeypatch.setattr(
         cli.CpuBenchmarkDataset,
         "from_csv",
-        lambda path: FakeDataset(),
+        lambda path: LocalDataset(),
     )
-    monkeypatch.setattr(cli, "_build_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(
+        cli,
+        "_build_pipeline",
+        lambda: (_ for _ in ()).throw(AssertionError("AI pipeline created")),
+    )
 
     assert cli._apply_benchmark(ads, "cpu.csv")[0]["cpu_mark"] == 10
+
+
+def test_apply_benchmark_normalizes_only_unmatched(monkeypatch):
+    from kufar_server_finder import cli
+
+    ads = [
+        {"link": "matched", "cpu_model": "Known CPU"},
+        {"link": "unmatched", "cpu_model": "Typo CPU"},
+    ]
+
+    class PartialDataset:
+        def enrich_ads(self, values):
+            result = []
+            for value in values:
+                item = dict(value)
+                if item.get("cpu_model") in {"Known CPU", "Normalized CPU"}:
+                    item["cpu_mark"] = 10
+                result.append(item)
+            return result
+
+    normalized_inputs = []
+
+    class FakePipeline:
+        def normalize_cpu_models_for_benchmark(self, values):
+            normalized_inputs.extend(values)
+            return [
+                {
+                    **values[0],
+                    "cpu_model": "Normalized CPU",
+                    "cpu_model_normalized": True,
+                }
+            ]
+
+    monkeypatch.setattr(
+        cli.CpuBenchmarkDataset,
+        "from_csv",
+        lambda path: PartialDataset(),
+    )
+
+    result = cli._apply_benchmark(
+        ads,
+        "cpu.csv",
+        pipeline=FakePipeline(),
+    )
+
+    assert [item["link"] for item in normalized_inputs] == ["unmatched"]
+    assert [item["cpu_mark"] for item in result] == [10, 10]
