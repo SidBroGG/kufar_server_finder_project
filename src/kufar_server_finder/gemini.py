@@ -52,8 +52,7 @@ class GeminiAnalyzer(GeminiEngine):
             instruction=SPECS_SYSTEM_INSTRUCTION,
             response_model=PCComponentSpec,
             prompt_prefix=(
-                "Извлеки минимальную рабочую конфигурацию, её цену "
-                "и явно написанные характеристики"
+                "Извлеки цену и характеристики самой дешёвой рабочей конфигурации"
             ),
         )
 

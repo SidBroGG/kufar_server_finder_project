@@ -15,6 +15,21 @@ from .visual_refinement import should_replace_with_vision
 
 logger = logging.getLogger(__name__)
 
+REMOVED_OUTPUT_FIELDS = ("minimum_configuration", "price_components")
+
+
+def strip_removed_output_fields(
+    ads: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Возвращает копии объявлений без удалённых полей старого формата."""
+    result: list[dict[str, Any]] = []
+    for ad in ads:
+        item = dict(ad)
+        for field in REMOVED_OUTPUT_FIELDS:
+            item.pop(field, None)
+        result.append(item)
+    return result
+
 
 _VISUAL_FALLBACKS: dict[str, tuple[str, str, int]] = {
     "desktop_pc": (
@@ -172,7 +187,7 @@ class AdPipeline:
             )
 
             if analysis is None:
-                item = dict(ad)
+                item = strip_removed_output_fields([ad])[0]
                 item["analysis_status"] = "pending"
                 item["analysis_error"] = "Gemini не вернул результат для объявления"
                 filtered.append(item)
@@ -182,7 +197,7 @@ class AdPipeline:
             # При сетевой ошибке описания отрицательный вывод ненадёжен:
             # сохраняем объявление для повторной обработки вместо удаления.
             if description_failed and not (analysis.is_target and analysis.is_working):
-                item = dict(ad)
+                item = strip_removed_output_fields([ad])[0]
                 item["analysis_status"] = "pending"
                 item["analysis_error"] = (
                     "Описание не загрузилось; отрицательный AI-результат не применён"
@@ -194,13 +209,9 @@ class AdPipeline:
             if not analysis.is_target or not analysis.is_working:
                 continue
 
-            item = dict(ad)
-            if analysis.real_price > 0:
-                item["price"] = analysis.real_price
-            if analysis.minimum_configuration:
-                item["minimum_configuration"] = analysis.minimum_configuration
-            if analysis.price_components:
-                item["price_components"] = list(analysis.price_components)
+            item = strip_removed_output_fields([ad])[0]
+            if analysis.price > 0:
+                item["price"] = analysis.price
             filtered.append(item)
 
         if filtered:
@@ -218,7 +229,7 @@ class AdPipeline:
         self,
         ads: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        result = [dict(ad) for ad in ads]
+        result = strip_removed_output_fields(ads)
         if result:
             # Сначала используем уже известную модель CPU, чтобы не отправлять
             # фотографии в Gemini только ради сокета.
@@ -233,7 +244,7 @@ class AdPipeline:
         ads: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Исправляет написание конкретных CPU перед локальным поиском."""
-        result = [dict(ad) for ad in ads]
+        result = strip_removed_output_fields(ads)
         candidates = [ad for ad in result if _needs_cpu_name_normalization(ad)]
         if not candidates:
             return result
@@ -289,6 +300,10 @@ class AdPipeline:
             )
 
     def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
+        for ad in ads:
+            for field in REMOVED_OUTPUT_FIELDS:
+                ad.pop(field, None)
+
         specs_by_link = {
             item.link: item for item in self.analyzer.extract_explicit_specs(ads)
         }
@@ -296,12 +311,8 @@ class AdPipeline:
             spec = specs_by_link.get(ad.get("link"))
             if not spec:
                 continue
-            if spec.real_price is not None and spec.real_price > 0:
-                ad["price"] = spec.real_price
-            if spec.minimum_configuration:
-                ad["minimum_configuration"] = spec.minimum_configuration
-            if spec.price_components:
-                ad["price_components"] = list(spec.price_components)
+            if spec.price is not None and spec.price > 0:
+                ad["price"] = spec.price
             self._set_exact_value(ad, "cpu_model", spec.cpu_model)
             self._set_exact_value(ad, "ram_type", spec.ram_type)
             self._set_exact_value(ad, "ram_gb", spec.ram_gb)

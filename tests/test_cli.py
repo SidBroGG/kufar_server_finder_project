@@ -297,7 +297,17 @@ def test_benchmark_command_updates_json(monkeypatch, tmp_path):
 
     input_path = tmp_path / "input.json"
     output_path = tmp_path / "benchmark.json"
-    save_items(input_path, [{"link": "x", "cpu_model": "CPU"}])
+    save_items(
+        input_path,
+        [
+            {
+                "link": "x",
+                "cpu_model": "CPU",
+                "minimum_configuration": "старый формат",
+                "price_components": ["старый расчёт"],
+            }
+        ],
+    )
 
     monkeypatch.setattr(
         cli,
@@ -320,7 +330,10 @@ def test_benchmark_command_updates_json(monkeypatch, tmp_path):
     )
 
     assert result == 0
-    assert load_items(output_path)[0]["cpu_mark"] == 123
+    result = load_items(output_path)[0]
+    assert result["cpu_mark"] == 123
+    assert "minimum_configuration" not in result
+    assert "price_components" not in result
 
 
 def test_excel_command_exports_json(monkeypatch, tmp_path):

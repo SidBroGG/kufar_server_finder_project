@@ -84,7 +84,7 @@ def analysis_json(link):
                 "link": link,
                 "is_target": True,
                 "is_working": True,
-                "real_price": 10,
+                "price": 10,
             }
         ]
     )

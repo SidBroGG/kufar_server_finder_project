@@ -14,11 +14,7 @@ class FakeAnalyzer:
                 link="https://example/working",
                 is_target=True,
                 is_working=True,
-                real_price=40,
-                minimum_configuration=(
-                    "Материнская плата, Core i5-3470, 8 ГБ ОЗУ"
-                ),
-                price_components=["Готовый комплект — 40 BYN"],
+                price=40,
                 cpu_model="Core i5-3470",
                 ram_gb=8,
             ),
@@ -26,7 +22,7 @@ class FakeAnalyzer:
                 link="https://example/broken",
                 is_target=True,
                 is_working=False,
-                real_price=20,
+                price=20,
             ),
         ]
 
@@ -34,9 +30,7 @@ class FakeAnalyzer:
         return [
             PCComponentSpec(
                 link="https://example/working",
-                real_price=35,
-                minimum_configuration="Плата + CPU + 4 ГБ ОЗУ",
-                price_components=["Плата — 25 BYN", "ОЗУ 4 ГБ — 10 BYN"],
+                price=35,
                 cpu_model="Core i5-3470",
                 ram_type=None,
                 ram_gb=4,
@@ -66,7 +60,12 @@ class FakeAnalyzer:
 
 def test_filters_and_updates_price_without_mutating_source():
     source = [
-        {"link": "https://example/working", "price": 50},
+        {
+            "link": "https://example/working",
+            "price": 50,
+            "minimum_configuration": "старый формат",
+            "price_components": ["старый расчёт"],
+        },
         {"link": "https://example/broken", "price": 20},
     ]
     result = AdPipeline(FakeAnalyzer()).filter_working_targets(source)
@@ -75,11 +74,10 @@ def test_filters_and_updates_price_without_mutating_source():
     assert result[0]["price"] == 40.0
     assert result[0]["cpu_model"] == "Core i5-3470"
     assert result[0]["ram_gb"] == 8
-    assert result[0]["minimum_configuration"] == (
-        "Материнская плата, Core i5-3470, 8 ГБ ОЗУ"
-    )
-    assert result[0]["price_components"] == ["Готовый комплект — 40 BYN"]
+    assert "minimum_configuration" not in result[0]
+    assert "price_components" not in result[0]
     assert source[0]["price"] == 50
+    assert source[0]["minimum_configuration"] == "старый формат"
 
 
 def test_missing_analysis_is_preserved_and_marked():
@@ -143,7 +141,7 @@ def test_text_socket_guess_has_priority_over_cpu_model_mapping():
                     link="https://example/working",
                     is_target=True,
                     is_working=True,
-                    real_price=40,
+                    price=40,
                     cpu_model="Core i5-3470",
                     cpu_socket="LGA1150",
                     cpu_socket_source="description_guess",
@@ -447,7 +445,7 @@ def test_filter_and_specs_use_single_analysis_call():
                     link="https://example/working",
                     is_target=True,
                     is_working=True,
-                    real_price=10,
+                    price=10,
                     cpu_model="Intel Core i5-3470",
                     ram_type="DDR3",
                     ram_gb=8,
@@ -468,16 +466,20 @@ def test_filter_and_specs_use_single_analysis_call():
     assert result[0]["ram_gb"] == 8
 
 
-def test_explicit_specs_can_update_minimum_configuration_and_price():
-    ads = [{"link": "https://example/working", "price": 99}]
+def test_explicit_specs_update_price_and_selected_configuration_fields():
+    ads = [
+        {
+            "link": "https://example/working",
+            "price": 99,
+            "minimum_configuration": "старый формат",
+            "price_components": ["старый расчёт"],
+        }
+    ]
     pipeline = AdPipeline(FakeAnalyzer())
 
     pipeline._merge_explicit_specs(ads)
 
     assert ads[0]["price"] == 35
-    assert ads[0]["minimum_configuration"] == "Плата + CPU + 4 ГБ ОЗУ"
-    assert ads[0]["price_components"] == [
-        "Плата — 25 BYN",
-        "ОЗУ 4 ГБ — 10 BYN",
-    ]
+    assert "minimum_configuration" not in ads[0]
+    assert "price_components" not in ads[0]
     assert ads[0]["ram_gb"] == 4

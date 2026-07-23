@@ -27,9 +27,7 @@ class AdAnalysis(_StrictResponseModel):
     link: str
     is_target: bool
     is_working: bool
-    real_price: float = Field(default=0, ge=0)
-    minimum_configuration: str | None = None
-    price_components: list[str] = Field(default_factory=list)
+    price: float = Field(default=0, ge=0)
     cpu_model: str | None = None
     ram_type: str | None = None
     ram_gb: int | None = Field(default=None, ge=0)
@@ -40,9 +38,7 @@ class AdAnalysis(_StrictResponseModel):
 
 class PCComponentSpec(_StrictResponseModel):
     link: str
-    real_price: float | None = Field(default=None, ge=0)
-    minimum_configuration: str | None = None
-    price_components: list[str] = Field(default_factory=list)
+    price: float | None = Field(default=None, ge=0)
     cpu_model: str | None = None
     ram_type: str | None = None
     ram_gb: int | None = Field(default=None, ge=0)

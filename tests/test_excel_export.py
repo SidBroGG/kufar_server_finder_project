@@ -1,7 +1,7 @@
 from openpyxl import load_workbook
 
-from kufar_server_finder.excel_export import export_ads_json_to_excel
 from kufar_finder_core import save_items
+from kufar_server_finder.excel_export import export_ads_json_to_excel
 
 
 def test_export_ads_json_to_excel(tmp_path):
@@ -14,11 +14,6 @@ def test_export_ads_json_to_excel(tmp_path):
                 "product_type": "thin_client",
                 "product_type_confidence": "high",
                 "price": 25.5,
-                "minimum_configuration": "Плата + CPU + ОЗУ 4 ГБ",
-                "price_components": [
-                    "Плата — 20 BYN",
-                    "ОЗУ 4 ГБ — 5.5 BYN",
-                ],
                 "ram_type": "DDR3",
                 "ram_type_confidence": "medium",
                 "ram_gb": None,
@@ -43,8 +38,6 @@ def test_export_ads_json_to_excel(tmp_path):
     assert [cell.value for cell in sheet[1]] == [
         "Тип устройства",
         "Цена, BYN",
-        "Минимальная рабочая конфигурация",
-        "Расчёт цены",
         "Тип ОЗУ",
         "Объём ОЗУ, ГБ",
         "Сокет процессора",
@@ -54,25 +47,13 @@ def test_export_ads_json_to_excel(tmp_path):
         "Ссылка",
     ]
     assert sheet["A2"].value == "Тонкий клиент"
-    assert sheet["C2"].value == "Плата + CPU + ОЗУ 4 ГБ"
-    assert sheet["D2"].value == "Плата — 20 BYN\nОЗУ 4 ГБ — 5.5 BYN"
-    assert sheet["F2"].value == "—"
-    assert sheet["K2"].hyperlink.target == "https://example.test/item/1"
+    assert sheet["B2"].value == 25.5
+    assert sheet["D2"].value == "—"
+    assert sheet["I2"].hyperlink.target == "https://example.test/item/1"
 
     assert sheet["A2"].fill.fgColor.rgb == "00C6EFCE"
-    assert sheet["E2"].fill.fgColor.rgb == "00FCE4D6"
-    assert sheet["G2"].fill.fgColor.rgb == "00FFC7CE"
-    assert sheet["H2"].fill.fgColor.rgb == "00C6EFCE"
-    assert sheet["I2"].fill.fgColor.rgb == "00C6EFCE"
-    assert sheet["J2"].fill.fgColor.rgb == "00FCE4D6"
-
-
-def test_price_components_display_fallbacks():
-    from kufar_server_finder.excel_export import _display_price_components
-
-    assert _display_price_components(None) == "—"
-    assert _display_price_components([]) == "—"
-    assert _display_price_components(("Плата — 20 BYN", "")) == "Плата — 20 BYN"
-    assert _display_price_components("Готовый ПК — 50 BYN") == (
-        "Готовый ПК — 50 BYN"
-    )
+    assert sheet["C2"].fill.fgColor.rgb == "00FCE4D6"
+    assert sheet["E2"].fill.fgColor.rgb == "00FFC7CE"
+    assert sheet["F2"].fill.fgColor.rgb == "00C6EFCE"
+    assert sheet["G2"].fill.fgColor.rgb == "00C6EFCE"
+    assert sheet["H2"].fill.fgColor.rgb == "00FCE4D6"
