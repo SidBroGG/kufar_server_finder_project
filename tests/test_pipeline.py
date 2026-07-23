@@ -1,7 +1,6 @@
 from kufar_server_finder.models import (
     AdAnalysis,
     CpuNameNormalization,
-    PCComponentSpec,
     VisionComponentSpec,
 )
 from kufar_server_finder.pipeline import AdPipeline
@@ -26,18 +25,6 @@ class FakeAnalyzer:
             ),
         ]
 
-    def extract_explicit_specs(self, ads):
-        return [
-            PCComponentSpec(
-                link="https://example/working",
-                price=35,
-                cpu_model="Core i5-3470",
-                ram_type=None,
-                ram_gb=4,
-                cpu_socket=None,
-            )
-        ]
-
     def infer_specs_from_images(self, ads):
         return [
             VisionComponentSpec(
@@ -60,12 +47,7 @@ class FakeAnalyzer:
 
 def test_filters_and_updates_price_without_mutating_source():
     source = [
-        {
-            "link": "https://example/working",
-            "price": 50,
-            "minimum_configuration": "старый формат",
-            "price_components": ["старый расчёт"],
-        },
+        {"link": "https://example/working", "price": 50},
         {"link": "https://example/broken", "price": 20},
     ]
     result = AdPipeline(FakeAnalyzer()).filter_working_targets(source)
@@ -74,10 +56,7 @@ def test_filters_and_updates_price_without_mutating_source():
     assert result[0]["price"] == 40.0
     assert result[0]["cpu_model"] == "Core i5-3470"
     assert result[0]["ram_gb"] == 8
-    assert "minimum_configuration" not in result[0]
-    assert "price_components" not in result[0]
-    assert source[0]["price"] == 50
-    assert source[0]["minimum_configuration"] == "старый формат"
+    assert source[0] == {"link": "https://example/working", "price": 50}
 
 
 def test_missing_analysis_is_preserved_and_marked():
@@ -433,7 +412,7 @@ def test_cpu_name_normalization_rejects_changed_model_number():
     assert "cpu_model_normalized" not in result[0]
 
 
-def test_filter_and_specs_use_single_analysis_call():
+def test_filter_uses_single_analysis_call():
     class CombinedAnalyzer(FakeAnalyzer):
         def __init__(self):
             self.analysis_calls = 0
@@ -452,9 +431,6 @@ def test_filter_and_specs_use_single_analysis_call():
                 )
             ]
 
-        def extract_explicit_specs(self, ads):
-            raise AssertionError("Отдельный specs-запрос не должен выполняться")
-
     analyzer = CombinedAnalyzer()
     result = AdPipeline(analyzer).filter_working_targets(
         [{"link": "https://example/working", "price": 12}]
@@ -466,20 +442,115 @@ def test_filter_and_specs_use_single_analysis_call():
     assert result[0]["ram_gb"] == 8
 
 
-def test_explicit_specs_update_price_and_selected_configuration_fields():
-    ads = [
-        {
-            "link": "https://example/working",
-            "price": 99,
-            "minimum_configuration": "старый формат",
-            "price_components": ["старый расчёт"],
-        }
-    ]
+
+def test_legacy_specs_pipeline_is_not_exposed():
+    from kufar_server_finder import models, prompts
+
     pipeline = AdPipeline(FakeAnalyzer())
+    assert not hasattr(pipeline, "_merge_explicit_specs")
+    assert not hasattr(FakeAnalyzer(), "extract_explicit_specs")
+    assert not hasattr(models, "PCComponentSpec")
+    assert not hasattr(prompts, "SPECS_SYSTEM_INSTRUCTION")
 
-    pipeline._merge_explicit_specs(ads)
 
-    assert ads[0]["price"] == 35
-    assert "minimum_configuration" not in ads[0]
-    assert "price_components" not in ads[0]
-    assert ads[0]["ram_gb"] == 4
+def test_pipeline_context_manager_and_empty_filter_close_analyzer():
+    class ClosableAnalyzer(FakeAnalyzer):
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    analyzer = ClosableAnalyzer()
+    with AdPipeline(analyzer) as pipeline:
+        assert pipeline.filter_working_targets([]) == []
+
+    assert analyzer.closed is True
+
+
+def test_cpu_normalization_skips_ineligible_missing_and_unchanged_results():
+    class Normalizer(FakeAnalyzer):
+        def normalize_cpu_names(self, ads):
+            return [
+                CpuNameNormalization(
+                    link="same",
+                    normalized_cpu_model="Intel Core i5-3470",
+                ),
+                CpuNameNormalization(
+                    link="empty",
+                    normalized_cpu_model=None,
+                ),
+            ]
+
+    source = [
+        {"link": "none", "cpu_model": None},
+        {
+            "link": "fallback",
+            "cpu_model": "CPU 1234",
+            "cpu_model_source": "visual_fallback",
+        },
+        {"link": "missing", "cpu_model": "CPU 5678"},
+        {"link": "same", "cpu_model": "Intel Core i5-3470"},
+        {"link": "empty", "cpu_model": "CPU 9999"},
+    ]
+
+    pipeline = AdPipeline(Normalizer())
+    assert pipeline.normalize_cpu_models_for_benchmark(
+        [{"link": "none", "cpu_model": None}]
+    ) == [{"link": "none", "cpu_model": None}]
+
+    result = pipeline.normalize_cpu_models_for_benchmark(source)
+
+    assert result == source
+
+
+def test_visual_fallback_handles_invalid_numeric_value():
+    ad = {"ram_gb": "invalid"}
+
+    AdPipeline._set_visual_fallback(ad, "ram_gb", 8)
+
+    assert ad["ram_gb"] == 8
+    assert ad["ram_gb_source"] == "visual_fallback"
+
+
+def test_exact_socket_removes_stale_confidence():
+    ad = {"cpu_socket_confidence": "low"}
+
+    AdPipeline._set_text_socket(ad, "AM4", "text_exact", "high")
+
+    assert ad["cpu_socket"] == "AM4"
+    assert "cpu_socket_confidence" not in ad
+
+
+def test_changed_cpu_removes_derived_socket_and_benchmark():
+    ad = {
+        "cpu_model": "Intel Atom",
+        "cpu_model_source": "image_guess",
+        "cpu_model_confidence": "low",
+        "cpu_socket": "BGA (soldered)",
+        "cpu_socket_source": "cpu_model_guess",
+        "cpu_socket_confidence": "low",
+        "cpu_mark": 10,
+        "cpu_benchmark_name": "Old CPU",
+        "cpu_benchmark_source": "dataset",
+    }
+
+    AdPipeline._set_vision_guess(
+        ad,
+        "cpu_model",
+        "Intel Atom N570",
+        "high",
+    )
+
+    assert ad["cpu_model"] == "Intel Atom N570"
+    assert "cpu_socket" not in ad
+    assert "cpu_mark" not in ad
+
+
+def test_cpu_normalization_eligibility_rejects_empty_and_visual_fallback():
+    from kufar_server_finder.pipeline import _needs_cpu_name_normalization
+
+    assert not _needs_cpu_name_normalization({"cpu_model": "unknown"})
+    assert not _needs_cpu_name_normalization(
+        {"cpu_model": "CPU 1234", "cpu_model_source": "visual_fallback"}
+    )

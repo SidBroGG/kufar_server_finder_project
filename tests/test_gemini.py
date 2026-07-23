@@ -259,12 +259,10 @@ def test_rate_limit_detection_supports_attributes_callable_and_message():
     assert not GeminiAnalyzer._is_rate_limit_error(Exception("bad request"))
 
 
-def test_all_ai_entrypoints_use_structured_processing():
+def test_current_ai_entrypoints_use_structured_processing():
     def handler(key, kwargs):
         contents = kwargs["contents"]
         link = parse_chunk_link(contents)
-        if contents.startswith("Извлеки"):
-            return json.dumps([{"link": link, "cpu_model": "Intel Core i5-3470"}])
         if contents.startswith("Нормализуй"):
             return json.dumps(
                 [{"link": link, "normalized_cpu_model": "Intel Core i5-3470"}]
@@ -275,16 +273,17 @@ def test_all_ai_entrypoints_use_structured_processing():
         make_config(),
         client_factory=lambda key: FakeClient(key, handler),
     )
-    ads = [{"link": "x", "description": "d" * 1000}]
 
-    assert analyzer.extract_explicit_specs(ads)[0].cpu_model == "Intel Core i5-3470"
-    assert analyzer.infer_specs(ads)[0].cpu_model == "Intel Core i5-3470"
+    assert analyzer.analyze_ads([{"link": "x"}])[0].link == "x"
     assert (
         analyzer.normalize_cpu_names(
             [{"link": "x", "cpu_model": "core i5 3470"}]
         )[0].normalized_cpu_model
         == "Intel Core i5-3470"
     )
+    assert not hasattr(analyzer, "extract_explicit_specs")
+    assert not hasattr(analyzer, "infer_specs")
+    assert not hasattr(analyzer, "_specs_payload")
 
 
 def test_vision_tasks_run_on_three_workers_concurrently(monkeypatch):
@@ -387,9 +386,9 @@ def test_payloads_trim_descriptions_and_parallel_fallback_handles_exception():
         "characteristics": None,
     }
 
-    assert analyzer._analysis_payload(ad)["description"] == "1234"
-    assert analyzer._specs_payload(ad)["description"] == "123456789"
-    assert analyzer._specs_payload(ad)["price"] == 5
+    payload = analyzer._analysis_payload(ad)
+    assert payload["description"] == "1234"
+    assert payload["price"] == 5
     assert analyzer._run_parallel(
         [1],
         operation=lambda worker, task: (_ for _ in ()).throw(RuntimeError("boom")),

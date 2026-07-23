@@ -7,28 +7,12 @@ from typing import Any, Protocol
 from .models import (
     AdAnalysis,
     CpuNameNormalization,
-    PCComponentSpec,
     VisionComponentSpec,
 )
 from .socket_inference import infer_socket_from_cpu
 from .visual_refinement import should_replace_with_vision
 
 logger = logging.getLogger(__name__)
-
-REMOVED_OUTPUT_FIELDS = ("minimum_configuration", "price_components")
-
-
-def strip_removed_output_fields(
-    ads: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Возвращает копии объявлений без удалённых полей старого формата."""
-    result: list[dict[str, Any]] = []
-    for ad in ads:
-        item = dict(ad)
-        for field in REMOVED_OUTPUT_FIELDS:
-            item.pop(field, None)
-        result.append(item)
-    return result
 
 
 _VISUAL_FALLBACKS: dict[str, tuple[str, str, int]] = {
@@ -136,11 +120,6 @@ _VISUAL_POWER_FALLBACKS = {
 class AdsAnalyzer(Protocol):
     def analyze_ads(self, ads: list[dict[str, Any]]) -> list[AdAnalysis]: ...
 
-    def extract_explicit_specs(
-        self,
-        ads: list[dict[str, Any]],
-    ) -> list[PCComponentSpec]: ...
-
     def infer_specs_from_images(
         self,
         ads: list[dict[str, Any]],
@@ -187,7 +166,7 @@ class AdPipeline:
             )
 
             if analysis is None:
-                item = strip_removed_output_fields([ad])[0]
+                item = dict(ad)
                 item["analysis_status"] = "pending"
                 item["analysis_error"] = "Gemini не вернул результат для объявления"
                 filtered.append(item)
@@ -197,7 +176,7 @@ class AdPipeline:
             # При сетевой ошибке описания отрицательный вывод ненадёжен:
             # сохраняем объявление для повторной обработки вместо удаления.
             if description_failed and not (analysis.is_target and analysis.is_working):
-                item = strip_removed_output_fields([ad])[0]
+                item = dict(ad)
                 item["analysis_status"] = "pending"
                 item["analysis_error"] = (
                     "Описание не загрузилось; отрицательный AI-результат не применён"
@@ -209,7 +188,7 @@ class AdPipeline:
             if not analysis.is_target or not analysis.is_working:
                 continue
 
-            item = strip_removed_output_fields([ad])[0]
+            item = dict(ad)
             if analysis.price > 0:
                 item["price"] = analysis.price
             filtered.append(item)
@@ -229,7 +208,7 @@ class AdPipeline:
         self,
         ads: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        result = strip_removed_output_fields(ads)
+        result = [dict(ad) for ad in ads]
         if result:
             # Сначала используем уже известную модель CPU, чтобы не отправлять
             # фотографии в Gemini только ради сокета.
@@ -244,7 +223,7 @@ class AdPipeline:
         ads: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Исправляет написание конкретных CPU перед локальным поиском."""
-        result = strip_removed_output_fields(ads)
+        result = [dict(ad) for ad in ads]
         candidates = [ad for ad in result if _needs_cpu_name_normalization(ad)]
         if not candidates:
             return result
@@ -297,30 +276,6 @@ class AdPipeline:
                 analysis.cpu_socket,
                 analysis.cpu_socket_source,
                 analysis.cpu_socket_confidence,
-            )
-
-    def _merge_explicit_specs(self, ads: list[dict[str, Any]]) -> None:
-        for ad in ads:
-            for field in REMOVED_OUTPUT_FIELDS:
-                ad.pop(field, None)
-
-        specs_by_link = {
-            item.link: item for item in self.analyzer.extract_explicit_specs(ads)
-        }
-        for ad in ads:
-            spec = specs_by_link.get(ad.get("link"))
-            if not spec:
-                continue
-            if spec.price is not None and spec.price > 0:
-                ad["price"] = spec.price
-            self._set_exact_value(ad, "cpu_model", spec.cpu_model)
-            self._set_exact_value(ad, "ram_type", spec.ram_type)
-            self._set_exact_value(ad, "ram_gb", spec.ram_gb)
-            self._set_text_socket(
-                ad,
-                spec.cpu_socket,
-                spec.cpu_socket_source,
-                spec.cpu_socket_confidence,
             )
 
     def _merge_vision_specs(self, ads: list[dict[str, Any]]) -> None:
@@ -378,8 +333,6 @@ class AdPipeline:
         for ad in ads:
             cls._set_visual_fallback(ad, "product_type", "other")
             product_type = str(ad.get("product_type") or "other")
-            if product_type not in _VISUAL_FALLBACKS:
-                product_type = "other"
 
             cpu_fallback, ram_type_fallback, ram_gb_fallback = (
                 _VISUAL_FALLBACKS[product_type]

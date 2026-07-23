@@ -32,5 +32,5 @@ testpaths = ["tests"]
 addopts = [
   "--cov=kufar_server_finder",
   "--cov-report=term-missing",
-  "--cov-fail-under=95",
+  "--cov-fail-under=100",
 ]

@@ -18,7 +18,7 @@ from kufar_finder_core import (
 from .benchmark import CpuBenchmarkDataset
 from .constants import KUFAR_CATEGORIES
 from .excel_export import export_ads_json_to_excel
-from .pipeline import AdPipeline, strip_removed_output_fields
+from .pipeline import AdPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "benchmark":
             ads = load_items(args.input)
-            result = strip_removed_output_fields(
-                _apply_benchmark(ads, args.dataset)
-            )
+            result = _apply_benchmark(ads, args.dataset)
             save_items(args.output, result)
             logger.info("JSON с benchmark сохранён: %s", args.output)
             return 0
@@ -172,7 +170,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception:
         logger.exception("Неожиданная ошибка")
         return 1
-    return 1
 
 
 def _build_kufar_config() -> KufarConfig:

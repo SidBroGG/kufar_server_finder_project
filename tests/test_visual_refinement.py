@@ -125,3 +125,32 @@ def test_cpu_specificity_handles_empty_approximate_and_exact_values():
     assert cpu_model_specificity(None) == 0
     assert cpu_model_specificity("Intel family примерно") == 1
     assert cpu_model_specificity("Xeon E5-2670 v2") == 2
+
+
+def test_low_confidence_non_text_values_are_requested():
+    ad = {
+        "cpu_model": "Intel Core i5-3470",
+        "cpu_model_source": "image_guess",
+        "cpu_model_confidence": "low",
+        "cpu_socket": "LGA1155",
+        "ram_type": "DDR3",
+        "ram_gb": 8,
+        "product_type": "desktop_pc",
+        "estimated_system_power_w": 100,
+    }
+
+    assert "cpu_model" in fields_needing_visual_analysis(ad)
+
+
+def test_specificity_helpers_cover_empty_and_known_fields():
+    from kufar_server_finder.visual_refinement import (
+        _field_specificity,
+        _ram_type_specificity,
+        _socket_specificity,
+    )
+
+    assert _field_specificity("ram_type", "DDR4") == 2
+    assert _field_specificity("cpu_socket", "AM4") == 2
+    assert _ram_type_specificity(None) == 0
+    assert _socket_specificity(None) == 0
+    assert _socket_specificity("примерный сокет") == 1

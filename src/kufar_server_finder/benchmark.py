@@ -41,13 +41,6 @@ class CpuBenchmarkEntry:
     cpu_mark: float
     row: Mapping[str, str]
 
-    @property
-    def name(self) -> str:
-        return self.cpu_name
-
-    @property
-    def score(self) -> float:
-        return self.cpu_mark
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +89,6 @@ class CpuBenchmarkDataset:
     def from_csv(cls, path: str | Path) -> CpuBenchmarkDataset:
         return cls(path)
 
-    @classmethod
-    def load(cls, path: str | Path) -> CpuBenchmarkDataset:
-        return cls.from_csv(path)
 
     @staticmethod
     def normalize_cpu_name(value: str) -> str:
@@ -166,16 +156,11 @@ class CpuBenchmarkDataset:
 
         return best.entry
 
-    lookup = find
-    match = find
-    find_match = find
 
     def score(self, cpu_model: str | None) -> float | None:
         entry = self.find(cpu_model)
         return entry.cpu_mark if entry else None
 
-    get_score = score
-    get_cpu_mark = score
 
     def enrich_ad(self, ad: Mapping[str, Any]) -> dict[str, Any]:
         result = dict(ad)
@@ -191,9 +176,6 @@ class CpuBenchmarkDataset:
     def enrich_ads(self, ads: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         return [self.enrich_ad(ad) for ad in ads]
 
-    apply = enrich_ads
-    enrich = enrich_ads
-    apply_to_ads = enrich_ads
 
     def _candidate_entries(
         self,

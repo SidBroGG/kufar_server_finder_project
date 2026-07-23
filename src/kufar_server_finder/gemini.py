@@ -10,13 +10,11 @@ from kufar_finder_core import GeminiEngine
 from .models import (
     AdAnalysis,
     CpuNameNormalization,
-    PCComponentSpec,
     VisionComponentSpec,
 )
 from .prompts import (
     ANALYSIS_SYSTEM_INSTRUCTION,
     CPU_NAME_NORMALIZATION_SYSTEM_INSTRUCTION,
-    SPECS_SYSTEM_INSTRUCTION,
     VISION_SPECS_SYSTEM_INSTRUCTION,
 )
 from .visual_refinement import fields_needing_visual_analysis
@@ -38,27 +36,6 @@ class GeminiAnalyzer(GeminiEngine):
             response_model=AdAnalysis,
             prompt_prefix="Проанализируй объявления и извлеки характеристики",
         )
-
-    def extract_explicit_specs(
-        self,
-        ads: list[dict[str, Any]],
-    ) -> list[PCComponentSpec]:
-        payload = [self._specs_payload(ad) for ad in ads]
-        return self._process_chunks(
-            payload=payload,
-            chunk_size=self.config.specs_chunk_size,
-            max_chunk_chars=self.config.specs_max_chunk_chars,
-            model=self.config.specs_model,
-            instruction=SPECS_SYSTEM_INSTRUCTION,
-            response_model=PCComponentSpec,
-            prompt_prefix=(
-                "Извлеки цену и характеристики самой дешёвой рабочей конфигурации"
-            ),
-        )
-
-    def infer_specs(self, ads: list[dict[str, Any]]) -> list[PCComponentSpec]:
-        """Backward-compatible alias for explicit text extraction."""
-        return self.extract_explicit_specs(ads)
 
     def normalize_cpu_names(
         self,
@@ -136,15 +113,6 @@ class GeminiAnalyzer(GeminiEngine):
             "title": ad.get("title", ""),
             "price": ad.get("price", 0),
             "description": self._trim_description(ad),
-            "characteristics": ad.get("characteristics") or {},
-        }
-
-    def _specs_payload(self, ad: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "link": ad.get("link"),
-            "title": ad.get("title", ""),
-            "price": ad.get("price", 0),
-            "description": self._trim_description(ad, limit=600),
             "characteristics": ad.get("characteristics") or {},
         }
 

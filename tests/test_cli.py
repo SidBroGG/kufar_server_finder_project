@@ -299,14 +299,7 @@ def test_benchmark_command_updates_json(monkeypatch, tmp_path):
     output_path = tmp_path / "benchmark.json"
     save_items(
         input_path,
-        [
-            {
-                "link": "x",
-                "cpu_model": "CPU",
-                "minimum_configuration": "старый формат",
-                "price_components": ["старый расчёт"],
-            }
-        ],
+        [{"link": "x", "cpu_model": "CPU"}],
     )
 
     monkeypatch.setattr(
@@ -332,8 +325,7 @@ def test_benchmark_command_updates_json(monkeypatch, tmp_path):
     assert result == 0
     result = load_items(output_path)[0]
     assert result["cpu_mark"] == 123
-    assert "minimum_configuration" not in result
-    assert "price_components" not in result
+    assert result["used_dataset"] == "cpu.csv"
 
 
 def test_excel_command_exports_json(monkeypatch, tmp_path):
@@ -584,3 +576,31 @@ def test_apply_benchmark_normalizes_only_unmatched(monkeypatch):
 
     assert [item["link"] for item in normalized_inputs] == ["unmatched"]
     assert [item["cpu_mark"] for item in result] == [10, 10]
+
+
+def test_apply_benchmark_dataset_handles_none_and_closes_owned_pipeline(monkeypatch):
+    from kufar_server_finder import cli
+
+    ads = [{"link": "x", "cpu_model": "Typo 1234"}]
+    assert cli._apply_benchmark_dataset(ads, None) is ads
+
+    class Dataset:
+        def enrich_ads(self, values):
+            return [dict(value) for value in values]
+
+    class Pipeline:
+        def __init__(self):
+            self.closed = False
+
+        def normalize_cpu_models_for_benchmark(self, values):
+            return values
+
+        def close(self):
+            self.closed = True
+
+    pipeline = Pipeline()
+    monkeypatch.setattr(cli, "_build_pipeline", lambda: pipeline)
+
+    cli._apply_benchmark_dataset(ads, Dataset())
+
+    assert pipeline.closed is True

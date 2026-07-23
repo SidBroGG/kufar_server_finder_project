@@ -68,19 +68,31 @@ from kufar_server_finder.benchmark import (
 )
 
 
-def test_entry_properties_aliases_and_iterable_source():
+def test_entry_and_dataset_expose_only_current_api():
     entry = CpuBenchmarkEntry("CPU 1234", 12.5, {"x": "y"})
     dataset = CpuBenchmarkDataset([entry])
 
-    assert entry.name == "CPU 1234"
-    assert entry.score == 12.5
-    assert dataset.load is not None
-    assert dataset.lookup("CPU 1234") is entry
-    assert dataset.match("CPU 1234") is entry
-    assert dataset.find_match("CPU 1234") is entry
+    assert entry.cpu_name == "CPU 1234"
+    assert entry.cpu_mark == 12.5
+    assert dataset.find("CPU 1234") is entry
     assert dataset.score("CPU 1234") == 12.5
-    assert dataset.get_score("missing") is None
-    assert dataset.apply([{"cpu_model": "CPU 1234"}])[0]["cpu_mark"] == 12.5
+    assert dataset.score("missing") is None
+    assert dataset.enrich_ads([{"cpu_model": "CPU 1234"}])[0]["cpu_mark"] == 12.5
+
+    for name in ("name", "score"):
+        assert not hasattr(entry, name)
+    for name in (
+        "load",
+        "lookup",
+        "match",
+        "find_match",
+        "get_score",
+        "get_cpu_mark",
+        "apply",
+        "enrich",
+        "apply_to_ads",
+    ):
+        assert not hasattr(dataset, name)
 
 
 def test_find_handles_empty_unknown_and_no_anchor_queries():
@@ -134,3 +146,26 @@ def test_number_parsing_weights_and_cleaning_helpers():
     assert _token_weight("i5") == 2.5
     assert _token_weight("ryzen") == 1.5
     assert _similarity_score("", frozenset(), "x", frozenset({"x"})) == 0
+
+
+def test_find_rejects_candidates_missing_one_query_anchor():
+    dataset = CpuBenchmarkDataset(
+        [
+            CpuBenchmarkEntry("CPU 1234 alpha", 1, {}),
+            CpuBenchmarkEntry("CPU 1234 beta", 2, {}),
+            CpuBenchmarkEntry("CPU 5678", 3, {}),
+        ]
+    )
+
+    assert dataset.find("CPU 1234 5678") is None
+
+
+def test_find_rejects_ambiguous_equal_matches():
+    dataset = CpuBenchmarkDataset(
+        [
+            CpuBenchmarkEntry("Alpha CPU 1234", 1, {}),
+            CpuBenchmarkEntry("Bravo CPU 1234", 2, {}),
+        ]
+    )
+
+    assert dataset.find("CPU 1234") is None

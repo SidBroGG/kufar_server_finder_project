@@ -36,17 +36,6 @@ class AdAnalysis(_StrictResponseModel):
     cpu_socket_confidence: Confidence | None = None
 
 
-class PCComponentSpec(_StrictResponseModel):
-    link: str
-    price: float | None = Field(default=None, ge=0)
-    cpu_model: str | None = None
-    ram_type: str | None = None
-    ram_gb: int | None = Field(default=None, ge=0)
-    cpu_socket: str | None = None
-    cpu_socket_source: SocketTextSource | None = None
-    cpu_socket_confidence: Confidence | None = None
-
-
 class CpuNameNormalization(_StrictResponseModel):
     link: str
     normalized_cpu_model: str | None = None

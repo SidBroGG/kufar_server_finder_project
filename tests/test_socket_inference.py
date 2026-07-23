@@ -77,3 +77,9 @@ def test_blank_and_unmapped_models_return_none():
     assert infer_socket_from_cpu("   ") is None
     assert infer_socket_from_cpu("Threadripper unknown") is None
     assert infer_socket_from_cpu("Pentium G9000") is None
+
+
+def test_intel_generation_rejects_unexpected_model_length():
+    from kufar_server_finder.socket_inference import _intel_generation
+
+    assert _intel_generation("123") is None

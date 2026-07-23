@@ -57,3 +57,18 @@ def test_export_ads_json_to_excel(tmp_path):
     assert sheet["F2"].fill.fgColor.rgb == "00C6EFCE"
     assert sheet["G2"].fill.fgColor.rgb == "00C6EFCE"
     assert sheet["H2"].fill.fgColor.rgb == "00FCE4D6"
+
+
+def test_excel_helpers_handle_non_links_and_missing_product_type():
+    from openpyxl import Workbook
+    from kufar_server_finder.excel_export import (
+        MISSING_VALUE,
+        _display_product_type,
+        _format_link,
+    )
+
+    cell = Workbook().active["A1"]
+    _format_link(cell, "not-a-link")
+
+    assert cell.hyperlink is None
+    assert _display_product_type(None) == MISSING_VALUE
