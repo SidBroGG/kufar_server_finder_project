@@ -15,6 +15,8 @@ MISSING_VALUE = "—"
 HEADERS = (
     "Тип устройства",
     "Цена, BYN",
+    "Минимальная рабочая конфигурация",
+    "Расчёт цены",
     "Тип ОЗУ",
     "Объём ОЗУ, ГБ",
     "Сокет процессора",
@@ -48,24 +50,26 @@ LINK_FONT = Font(color="0563C1", underline="single")
 
 FIELD_COLUMNS = {
     "product_type": 1,
-    "ram_type": 3,
-    "ram_gb": 4,
-    "cpu_socket": 5,
-    "cpu_model": 6,
-    "cpu_mark": 7,
-    "estimated_system_power_w": 8,
+    "ram_type": 5,
+    "ram_gb": 6,
+    "cpu_socket": 7,
+    "cpu_model": 8,
+    "cpu_mark": 9,
+    "estimated_system_power_w": 10,
 }
 
 COLUMN_WIDTHS = {
     1: 24,
     2: 13,
-    3: 14,
-    4: 18,
-    5: 20,
-    6: 30,
-    7: 16,
-    8: 34,
-    9: 55,
+    3: 46,
+    4: 38,
+    5: 14,
+    6: 18,
+    7: 20,
+    8: 30,
+    9: 16,
+    10: 34,
+    11: 55,
 }
 
 
@@ -89,7 +93,7 @@ def export_ads_to_excel(
     sheet = workbook.active
     sheet.title = "Объявления"
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:I{max(len(ads) + 1, 1)}"
+    sheet.auto_filter.ref = f"A1:K{max(len(ads) + 1, 1)}"
 
     for column, header in enumerate(HEADERS, start=1):
         cell = sheet.cell(row=1, column=column, value=header)
@@ -101,6 +105,8 @@ def export_ads_to_excel(
         values = (
             _display_product_type(ad.get("product_type")),
             _value_or_dash(ad.get("price")),
+            _value_or_dash(ad.get("minimum_configuration")),
+            _display_price_components(ad.get("price_components")),
             _value_or_dash(ad.get("ram_type")),
             _value_or_dash(ad.get("ram_gb")),
             _value_or_dash(ad.get("cpu_socket")),
@@ -114,11 +120,11 @@ def export_ads_to_excel(
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
         sheet.cell(row=row_index, column=2).number_format = "0.00"
-        sheet.cell(row=row_index, column=4).number_format = "0"
-        sheet.cell(row=row_index, column=7).number_format = "0.##"
-        sheet.cell(row=row_index, column=8).number_format = "0"
+        sheet.cell(row=row_index, column=6).number_format = "0"
+        sheet.cell(row=row_index, column=9).number_format = "0.##"
+        sheet.cell(row=row_index, column=10).number_format = "0"
 
-        _format_link(sheet.cell(row=row_index, column=9), ad.get("link"))
+        _format_link(sheet.cell(row=row_index, column=11), ad.get("link"))
         _apply_confidence_colors(sheet, row_index, ad)
 
     for column, width in COLUMN_WIDTHS.items():
@@ -162,3 +168,12 @@ def _display_product_type(value: Any) -> Any:
 
 def _value_or_dash(value: Any) -> Any:
     return MISSING_VALUE if value in (None, "") else value
+
+
+def _display_price_components(value: Any) -> Any:
+    if value in (None, "", []):
+        return MISSING_VALUE
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return "\n".join(items) if items else MISSING_VALUE
+    return str(value)

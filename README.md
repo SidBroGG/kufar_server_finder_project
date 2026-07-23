@@ -1,20 +1,6 @@
 # Kufar Server Finder
 
 CLI-приложение для поиска недорогих рабочих компьютеров и ноутбуков на Kufar.
-Начиная с версии 2.0 общая инфраструктура вынесена во внешнюю библиотеку
-`kufar-finder-core`.
-
-## Что использует приложение
-
-Из `kufar-finder-core` импортируются:
-
-- `KufarClient` и `KufarConfig` — сбор объявлений, описаний и изображений;
-- `GeminiEngine` и `GeminiConfig` — workers, retries, structured JSON и vision;
-- `process_streaming` — обработка пачек во время дальнейшего сбора;
-- `load_items` и `save_items` — JSON-хранилище.
-
-В проекте остаётся только предметная логика: фильтрация рабочих ПК, prompts,
-определение комплектующих, CPU Benchmark и Excel.
 
 ## Требования
 
@@ -67,9 +53,6 @@ KufarClient.iter_ads
   -> CPU benchmark
   -> JSON и Excel
 ```
-
-Как только собрано `GEMINI_CHUNK_SIZE` объявлений, `process_streaming` запускает
-обработку пачки, не ожидая завершения всего сбора.
 
 ## Команды
 

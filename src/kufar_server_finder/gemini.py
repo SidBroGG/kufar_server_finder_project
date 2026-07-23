@@ -51,7 +51,10 @@ class GeminiAnalyzer(GeminiEngine):
             model=self.config.specs_model,
             instruction=SPECS_SYSTEM_INSTRUCTION,
             response_model=PCComponentSpec,
-            prompt_prefix="Извлеки только явно написанные характеристики",
+            prompt_prefix=(
+                "Извлеки минимальную рабочую конфигурацию, её цену "
+                "и явно написанные характеристики"
+            ),
         )
 
     def infer_specs(self, ads: list[dict[str, Any]]) -> list[PCComponentSpec]:
@@ -141,6 +144,7 @@ class GeminiAnalyzer(GeminiEngine):
         return {
             "link": ad.get("link"),
             "title": ad.get("title", ""),
+            "price": ad.get("price", 0),
             "description": self._trim_description(ad, limit=600),
             "characteristics": ad.get("characteristics") or {},
         }

@@ -15,6 +15,10 @@ class FakeAnalyzer:
                 is_target=True,
                 is_working=True,
                 real_price=40,
+                minimum_configuration=(
+                    "Материнская плата, Core i5-3470, 8 ГБ ОЗУ"
+                ),
+                price_components=["Готовый комплект — 40 BYN"],
                 cpu_model="Core i5-3470",
                 ram_gb=8,
             ),
@@ -30,9 +34,12 @@ class FakeAnalyzer:
         return [
             PCComponentSpec(
                 link="https://example/working",
+                real_price=35,
+                minimum_configuration="Плата + CPU + 4 ГБ ОЗУ",
+                price_components=["Плата — 25 BYN", "ОЗУ 4 ГБ — 10 BYN"],
                 cpu_model="Core i5-3470",
                 ram_type=None,
-                ram_gb=8,
+                ram_gb=4,
                 cpu_socket=None,
             )
         ]
@@ -68,6 +75,10 @@ def test_filters_and_updates_price_without_mutating_source():
     assert result[0]["price"] == 40.0
     assert result[0]["cpu_model"] == "Core i5-3470"
     assert result[0]["ram_gb"] == 8
+    assert result[0]["minimum_configuration"] == (
+        "Материнская плата, Core i5-3470, 8 ГБ ОЗУ"
+    )
+    assert result[0]["price_components"] == ["Готовый комплект — 40 BYN"]
     assert source[0]["price"] == 50
 
 
@@ -455,3 +466,18 @@ def test_filter_and_specs_use_single_analysis_call():
     assert result[0]["cpu_model"] == "Intel Core i5-3470"
     assert result[0]["ram_type"] == "DDR3"
     assert result[0]["ram_gb"] == 8
+
+
+def test_explicit_specs_can_update_minimum_configuration_and_price():
+    ads = [{"link": "https://example/working", "price": 99}]
+    pipeline = AdPipeline(FakeAnalyzer())
+
+    pipeline._merge_explicit_specs(ads)
+
+    assert ads[0]["price"] == 35
+    assert ads[0]["minimum_configuration"] == "Плата + CPU + 4 ГБ ОЗУ"
+    assert ads[0]["price_components"] == [
+        "Плата — 25 BYN",
+        "ОЗУ 4 ГБ — 10 BYN",
+    ]
+    assert ads[0]["ram_gb"] == 4

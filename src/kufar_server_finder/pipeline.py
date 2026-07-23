@@ -197,6 +197,10 @@ class AdPipeline:
             item = dict(ad)
             if analysis.real_price > 0:
                 item["price"] = analysis.real_price
+            if analysis.minimum_configuration:
+                item["minimum_configuration"] = analysis.minimum_configuration
+            if analysis.price_components:
+                item["price_components"] = list(analysis.price_components)
             filtered.append(item)
 
         if filtered:
@@ -292,6 +296,12 @@ class AdPipeline:
             spec = specs_by_link.get(ad.get("link"))
             if not spec:
                 continue
+            if spec.real_price is not None and spec.real_price > 0:
+                ad["price"] = spec.real_price
+            if spec.minimum_configuration:
+                ad["minimum_configuration"] = spec.minimum_configuration
+            if spec.price_components:
+                ad["price_components"] = list(spec.price_components)
             self._set_exact_value(ad, "cpu_model", spec.cpu_model)
             self._set_exact_value(ad, "ram_type", spec.ram_type)
             self._set_exact_value(ad, "ram_gb", spec.ram_gb)

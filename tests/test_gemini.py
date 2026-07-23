@@ -389,6 +389,7 @@ def test_payloads_trim_descriptions_and_parallel_fallback_handles_exception():
 
     assert analyzer._analysis_payload(ad)["description"] == "1234"
     assert analyzer._specs_payload(ad)["description"] == "123456789"
+    assert analyzer._specs_payload(ad)["price"] == 5
     assert analyzer._run_parallel(
         [1],
         operation=lambda worker, task: (_ for _ in ()).throw(RuntimeError("boom")),
