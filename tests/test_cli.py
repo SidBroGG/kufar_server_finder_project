@@ -84,14 +84,14 @@ def test_run_creates_excel_from_final_json(monkeypatch, tmp_path):
             self.closed = False
 
         def iter_ads(self, **kwargs):
-            assert kwargs == {"max_price": 100.0}
+            assert kwargs == {"min_price": 0.0, "max_price": 100.0}
             yield {"link": "x", "price": 10}
 
         def close(self):
             self.closed = True
 
     monkeypatch.setattr(cli.GeminiConfig, "from_env", lambda: FakeGeminiConfig())
-    monkeypatch.setattr(cli.KufarConfig, "from_env", lambda: object())
+    monkeypatch.setattr(cli.KufarConfig, "from_env", lambda **kwargs: object())
     monkeypatch.setattr(cli, "KufarClient", FakeClient)
     monkeypatch.setattr(
         cli,
@@ -140,7 +140,7 @@ def test_run_starts_pipeline_before_kufar_collection_finishes(
     tmp_path,
 ):
     from kufar_server_finder import cli
-    from kufar_server_finder.storage import load_ads
+    from kufar_finder_core import load_items
 
     first_batch_started = threading.Event()
     processed_batches = []
@@ -171,7 +171,7 @@ def test_run_starts_pipeline_before_kufar_collection_finishes(
         return [{**ad, "processed": True} for ad in ads]
 
     monkeypatch.setattr(cli.GeminiConfig, "from_env", lambda: FakeGeminiConfig())
-    monkeypatch.setattr(cli.KufarConfig, "from_env", lambda: object())
+    monkeypatch.setattr(cli.KufarConfig, "from_env", lambda **kwargs: object())
     monkeypatch.setattr(cli, "KufarClient", FakeClient)
     monkeypatch.setattr(cli, "_build_pipeline", lambda config=None: FakePipeline())
     monkeypatch.setattr(cli, "_process_run_batch", process_batch)
@@ -180,6 +180,7 @@ def test_run_starts_pipeline_before_kufar_collection_finishes(
     raw_path = tmp_path / "raw.json"
     output_path = tmp_path / "output.json"
     args = argparse.Namespace(
+        min_price=0,
         max_price=100,
         raw_output=str(raw_path),
         output=str(output_path),
@@ -190,8 +191,8 @@ def test_run_starts_pipeline_before_kufar_collection_finishes(
     cli._run_streaming(args)
 
     assert processed_batches == [["1", "2"], ["3"]]
-    assert [ad["link"] for ad in load_ads(raw_path)] == ["3", "2", "1"]
-    assert all(ad["processed"] for ad in load_ads(output_path))
+    assert [ad["link"] for ad in load_items(raw_path)] == ["3", "2", "1"]
+    assert all(ad["processed"] for ad in load_items(output_path))
 
 
 def test_new_commands_parse():
@@ -235,12 +236,12 @@ def test_new_commands_parse():
 
 def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path):
     from kufar_server_finder import cli
-    from kufar_server_finder.storage import save_ads
+    from kufar_finder_core import save_items
 
     input_path = tmp_path / "raw.json"
     output_path = tmp_path / "final.json"
     excel_path = tmp_path / "final.xlsx"
-    save_ads(input_path, [{"link": "x"}])
+    save_items(input_path, [{"link": "x"}])
     calls = []
     shared_pipeline = object()
     monkeypatch.setattr(cli, "_build_pipeline", lambda: shared_pipeline)
@@ -292,11 +293,11 @@ def test_pipeline_processes_existing_json_without_collect(monkeypatch, tmp_path)
 
 def test_benchmark_command_updates_json(monkeypatch, tmp_path):
     from kufar_server_finder import cli
-    from kufar_server_finder.storage import load_ads, save_ads
+    from kufar_finder_core import load_items, save_items
 
     input_path = tmp_path / "input.json"
     output_path = tmp_path / "benchmark.json"
-    save_ads(input_path, [{"link": "x", "cpu_model": "CPU"}])
+    save_items(input_path, [{"link": "x", "cpu_model": "CPU"}])
 
     monkeypatch.setattr(
         cli,
@@ -319,7 +320,7 @@ def test_benchmark_command_updates_json(monkeypatch, tmp_path):
     )
 
     assert result == 0
-    assert load_ads(output_path)[0]["cpu_mark"] == 123
+    assert load_items(output_path)[0]["cpu_mark"] == 123
 
 
 def test_excel_command_exports_json(monkeypatch, tmp_path):
@@ -350,17 +351,17 @@ def test_excel_command_exports_json(monkeypatch, tmp_path):
 
 def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
     from kufar_server_finder import cli
-    from kufar_server_finder.storage import load_ads, save_ads
+    from kufar_finder_core import load_items, save_items
 
     collect_output = tmp_path / "collect.json"
     monkeypatch.setattr(cli, "_collect", lambda args: [{"link": "collect"}])
     assert cli.main(["collect", "--output", str(collect_output)]) == 0
-    assert load_ads(collect_output) == [{"link": "collect"}]
+    assert load_items(collect_output) == [{"link": "collect"}]
 
     input_path = tmp_path / "input.json"
     analyze_output = tmp_path / "analyze.json"
     vision_output = tmp_path / "vision.json"
-    save_ads(input_path, [{"link": "x"}])
+    save_items(input_path, [{"link": "x"}])
     shared_pipeline = object()
     monkeypatch.setattr(cli, "_build_pipeline", lambda: shared_pipeline)
     monkeypatch.setattr(
@@ -384,7 +385,7 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
             "cpu.csv",
         ]
     ) == 0
-    assert load_ads(analyze_output)[0]["specs"] is True
+    assert load_items(analyze_output)[0]["specs"] is True
 
     monkeypatch.setattr(
         cli,
@@ -394,7 +395,7 @@ def test_collect_analyze_and_vision_commands(monkeypatch, tmp_path):
     assert cli.main(
         ["vision", "--input", str(input_path), "--output", str(vision_output)]
     ) == 0
-    assert load_ads(vision_output)[0]["vision"] is True
+    assert load_items(vision_output)[0]["vision"] is True
 
 
 def test_main_returns_expected_error_codes(monkeypatch, tmp_path):
@@ -446,7 +447,7 @@ def test_collect_reads_kufar_settings_from_env_and_uses_categories(monkeypatch):
     monkeypatch.setenv("KUFAR_DETAIL_WORKERS", "2")
     monkeypatch.setenv("KUFAR_DETAIL_RETRIES", "4")
     monkeypatch.setattr(cli, "KufarClient", FakeClient)
-    args = argparse.Namespace(max_price=20)
+    args = argparse.Namespace(min_price=0, max_price=20)
 
     assert cli._collect(args) == [{"link": "x"}]
     assert captured["config"].region == "5"
@@ -455,7 +456,7 @@ def test_collect_reads_kufar_settings_from_env_and_uses_categories(monkeypatch):
     assert captured["config"].detail_delay == 2
     assert captured["config"].detail_workers == 2
     assert captured["config"].detail_max_retries == 4
-    assert captured["kwargs"] == {"max_price": 20}
+    assert captured["kwargs"] == {"min_price": 0, "max_price": 20}
     assert captured["closed"] is True
 
 
@@ -570,6 +571,3 @@ def test_apply_benchmark_normalizes_only_unmatched(monkeypatch):
 
     assert [item["link"] for item in normalized_inputs] == ["unmatched"]
     assert [item["cpu_mark"] for item in result] == [10, 10]
-
-
-

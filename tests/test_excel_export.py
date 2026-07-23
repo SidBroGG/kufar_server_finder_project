@@ -1,13 +1,13 @@
 from openpyxl import load_workbook
 
 from kufar_server_finder.excel_export import export_ads_json_to_excel
-from kufar_server_finder.storage import save_ads
+from kufar_finder_core import save_items
 
 
 def test_export_ads_json_to_excel(tmp_path):
     json_path = tmp_path / "output.json"
     excel_path = tmp_path / "output.xlsx"
-    save_ads(
+    save_items(
         json_path,
         [
             {

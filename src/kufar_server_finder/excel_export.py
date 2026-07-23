@@ -8,7 +8,7 @@ from openpyxl.cell import Cell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .storage import load_ads
+from kufar_finder_core import load_items
 
 MISSING_VALUE = "—"
 
@@ -74,7 +74,7 @@ def export_ads_json_to_excel(
     excel_path: str | Path,
 ) -> None:
     """Преобразует JSON-массив объявлений в оформленный Excel-документ."""
-    ads = load_ads(json_path)
+    ads = load_items(json_path)
     export_ads_to_excel(ads, excel_path)
 
 

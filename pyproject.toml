@@ -4,17 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kufar-server-finder"
-version = "1.0.0"
-description = "Сбор и AI-фильтрация объявлений Kufar для поиска недорогих Debian-серверов"
+version = "2.0.0"
+description = "Поиск недорогих рабочих компьютеров на Kufar поверх kufar-finder-core"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "beautifulsoup4>=4.12,<5",
-  "google-genai>=1.0,<2",
+  "kufar-finder-core>=1.1,<2",
   "openpyxl>=3.1.5,<4",
   "pydantic>=2.7,<3",
-  "python-dotenv>=1.0,<2",
-  "requests>=2.31,<3",
 ]
 
 [project.optional-dependencies]

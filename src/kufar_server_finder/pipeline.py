@@ -523,5 +523,3 @@ def _same_cpu_identity(current: str, proposed: str) -> bool:
     current_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(current)}
     proposed_ids = {token.casefold() for token in _CPU_ID_TOKEN_RE.findall(proposed)}
     return bool(current_ids) and current_ids == proposed_ids
-
-

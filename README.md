@@ -1,44 +1,40 @@
 # Kufar Server Finder
 
-CLI-программа для поиска недорогих рабочих компьютеров и ноутбуков на Kufar.
-Она собирает объявления из двух категорий, загружает описания, фильтрует товары
-через Gemini, определяет комплектующие по тексту и фотографиям, добавляет CPU
-Benchmark и экспортирует результат в Excel.
+CLI-приложение для поиска недорогих рабочих компьютеров и ноутбуков на Kufar.
+Начиная с версии 2.0 общая инфраструктура вынесена во внешнюю библиотеку
+`kufar-finder-core`.
+
+## Что использует приложение
+
+Из `kufar-finder-core` импортируются:
+
+- `KufarClient` и `KufarConfig` — сбор объявлений, описаний и изображений;
+- `GeminiEngine` и `GeminiConfig` — workers, retries, structured JSON и vision;
+- `process_streaming` — обработка пачек во время дальнейшего сбора;
+- `load_items` и `save_items` — JSON-хранилище.
+
+В проекте остаётся только предметная логика: фильтрация рабочих ПК, prompts,
+определение комплектующих, CPU Benchmark и Excel.
 
 ## Требования
 
-- Python 3.11 или новее;
-- Windows 10, Linux или macOS;
-- API-ключ Gemini.
+- Python 3.11+;
+- опубликованный пакет `kufar-finder-core>=1.1,<2`;
+- Gemini API key.
 
-## Установка в Windows PowerShell
+## Установка
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-Откройте `.env` и укажите ключ:
-
-```env
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-## Установка и запуск в Linux
-
-Для Debian, Ubuntu и производных установите Python и модуль виртуальных окружений:
+Linux/macOS:
 
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip
-```
-
-Перейдите в каталог проекта, создайте окружение и установите зависимости:
-
-```bash
-cd /путь/к/kufar_server_finder_project
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -46,157 +42,48 @@ python -m pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Откройте `.env` и укажите API-ключ Gemini:
-
-```bash
-nano .env
-```
+Укажите в `.env`:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-Запустите полный pipeline:
+## Полный запуск
 
-```bash
-python -m kufar_server_finder run --max-price 50 --raw-output output_unfiltered.json --output output.json --excel-output output.xlsx --dataset CPU_benchmark_v4.csv
+```powershell
+python -m kufar_server_finder run --min-price 10 --max-price 50 --raw-output output_unfiltered.json --output output.json --excel-output output.xlsx --dataset CPU_benchmark_v4.csv
 ```
 
-Если датасет CPU Benchmark не используется, уберите параметр `--dataset`:
+`--dataset` необязателен. Диапазон цены включительный. По умолчанию используется
+`0..100 BYN`.
 
-```bash
-python -m kufar_server_finder run --max-price 50 --raw-output output_unfiltered.json --output output.json --excel-output output.xlsx
+Pipeline:
+
+```text
+KufarClient.iter_ads
+  -> kufar_finder_core.process_streaming
+  -> AI-фильтрация и характеристики
+  -> vision
+  -> CPU benchmark
+  -> JSON и Excel
 ```
 
-При следующем входе в терминал сначала активируйте окружение:
-
-```bash
-cd /путь/к/kufar_server_finder_project
-source .venv/bin/activate
-```
-
-Для выхода из виртуального окружения выполните `deactivate`.
-
-## Настройки `.env`
-
-### Kufar
-
-```env
-KUFAR_REGION=7
-KUFAR_TIMEOUT=20
-KUFAR_PAGE_DELAY=1
-KUFAR_DETAIL_DELAY=1
-KUFAR_DETAIL_WORKERS=3
-KUFAR_DETAIL_RETRIES=3
-```
-
-- `KUFAR_REGION` — идентификатор региона Kufar;
-- `KUFAR_TIMEOUT` — тайм-аут HTTP-запроса в секундах;
-- `KUFAR_PAGE_DELAY` — задержка перед загрузкой следующей страницы категории;
-- `KUFAR_DETAIL_DELAY` — общая задержка между запросами страниц объявлений;
-- `KUFAR_DETAIL_WORKERS` — число параллельных загрузчиков описаний;
-- `KUFAR_DETAIL_RETRIES` — число попыток загрузки описания.
-
-При частых ответах `429` увеличьте `KUFAR_DETAIL_DELAY` или уменьшите
-`KUFAR_DETAIL_WORKERS`.
-
-### Gemini
-
-```env
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_WORKER_COUNT=3
-GEMINI_ANALYSIS_MODEL=gemini-3.5-flash-lite
-GEMINI_SPECS_MODEL=gemini-3.5-flash-lite
-GEMINI_VISION_MODEL=gemini-3.5-flash-lite
-GEMINI_CHUNK_SIZE=30
-GEMINI_SPECS_CHUNK_SIZE=25
-GEMINI_MAX_CHUNK_CHARS=25000
-GEMINI_SPECS_MAX_CHUNK_CHARS=20000
-GEMINI_VISION_MAX_IMAGES=5
-GEMINI_IMAGE_DOWNLOAD_WORKERS=3
-GEMINI_IMAGE_TIMEOUT=20
-GEMINI_REQUEST_DELAY=1
-GEMINI_MAX_RETRIES=3
-```
-
-Для собственного endpoint или прокси доступны:
-
-```env
-GEMINI_BASE_URL=https://your-gemini-endpoint.example
-GEMINI_API_VERSION=v1beta
-```
+Как только собрано `GEMINI_CHUNK_SIZE` объявлений, `process_streaming` запускает
+обработку пачки, не ожидая завершения всего сбора.
 
 ## Команды
 
-### Полный запуск
-
 ```powershell
-python -m kufar_server_finder run --max-price 50 --raw-output output_unfiltered.json --output output.json --excel-output output.xlsx --dataset CPU_benchmark_v4.csv
-```
-
-Этапы:
-
-```text
-сбор категорий -> описания -> AI-фильтрация и характеристики -> фото-анализ -> benchmark -> JSON -> Excel
-```
-
-Во время `run` программа не ждёт завершения полного сбора. Как только готово
-`GEMINI_CHUNK_SIZE` объявлений, эта пачка передаётся в AI-pipeline параллельно
-с дальнейшим сбором Kufar. Последняя неполная пачка обрабатывается после сбора.
-
-`--dataset` необязателен. Без него этап CPU Benchmark пропускается.
-
-### Только сбор объявлений
-
-```powershell
-python -m kufar_server_finder collect --max-price 50 --output output_unfiltered.json
-```
-
-Доступные параметры сбора:
-
-- `--max-price` — максимальная цена в BYN;
-
-Все сетевые настройки Kufar задаются только через `.env`.
-
-### Анализ собранного JSON
-
-```powershell
-python -m kufar_server_finder analyze --input output_unfiltered.json --output output_analyzed.json --dataset CPU_benchmark_v4.csv
-```
-
-Команда всегда фильтрует объявления и извлекает характеристики из текста.
-
-### Полный pipeline без повторного сбора
-
-```powershell
-python -m kufar_server_finder pipeline --input output_unfiltered.json --output output.json --excel-output output.xlsx --dataset CPU_benchmark_v4.csv
-```
-
-### Только анализ фотографий
-
-```powershell
-python -m kufar_server_finder vision --input output_analyzed.json --output output_vision.json
-```
-
-### Только CPU Benchmark
-
-```powershell
-python -m kufar_server_finder benchmark --input output_vision.json --output output_benchmark.json --dataset CPU_benchmark_v4.csv
-```
-
-### Только Excel
-
-```powershell
+python -m kufar_server_finder collect --min-price 10 --max-price 50 --output raw.json
+python -m kufar_server_finder analyze --input raw.json --output analyzed.json
+python -m kufar_server_finder vision --input analyzed.json --output vision.json
+python -m kufar_server_finder benchmark --input vision.json --output benchmark.json --dataset CPU_benchmark_v4.csv
+python -m kufar_server_finder pipeline --input raw.json --output output.json --excel-output output.xlsx --dataset CPU_benchmark_v4.csv
 python -m kufar_server_finder excel --input output.json --output output.xlsx
 ```
-
-В Excel выводятся тип устройства, цена, ОЗУ, сокет, CPU, CPU Benchmark,
-оценочная мощность системы и ссылка. Цвет ячейки показывает уверенность:
-красный — `low`, оранжевый — `medium`, зелёный — `high`.
 
 ## Тесты
 
 ```powershell
-python -m pip install -e ".[dev]"
 pytest
 ```

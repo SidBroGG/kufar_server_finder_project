@@ -455,5 +455,3 @@ def test_filter_and_specs_use_single_analysis_call():
     assert result[0]["cpu_model"] == "Intel Core i5-3470"
     assert result[0]["ram_type"] == "DDR3"
     assert result[0]["ram_gb"] == 8
-
-

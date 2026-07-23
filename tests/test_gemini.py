@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from kufar_server_finder.config import GeminiConfig
+from kufar_finder_core import GeminiConfig
 from kufar_server_finder.gemini import GeminiAnalyzer
 
 
@@ -114,7 +114,7 @@ def test_client_receives_optional_base_url_and_api_version(monkeypatch):
         calls.append(kwargs)
         return FakeClient(kwargs["api_key"], lambda key, request: "[]")
 
-    monkeypatch.setattr("kufar_server_finder.gemini.genai.Client", fake_client)
+    monkeypatch.setattr("kufar_finder_core.gemini.genai.Client", fake_client)
     analyzer = GeminiAnalyzer(
         make_config(
             worker_count=2,
@@ -137,7 +137,7 @@ def test_default_client_omits_http_options(monkeypatch):
         calls.append(kwargs)
         return FakeClient(kwargs["api_key"], lambda key, request: "[]")
 
-    monkeypatch.setattr("kufar_server_finder.gemini.genai.Client", fake_client)
+    monkeypatch.setattr("kufar_finder_core.gemini.genai.Client", fake_client)
     GeminiAnalyzer(make_config(worker_count=1))
 
     assert calls == [{"api_key": "key-1"}]
@@ -182,7 +182,7 @@ def test_rate_limit_retries_same_single_key(monkeypatch):
             raise RateLimitError("429")
         return analysis_json(parse_chunk_link(kwargs["contents"]))
 
-    monkeypatch.setattr("kufar_server_finder.gemini.time.sleep", sleeps.append)
+    monkeypatch.setattr("kufar_finder_core.gemini.time.sleep", sleeps.append)
     analyzer = GeminiAnalyzer(
         make_config(max_retries=2),
         client_factory=lambda key: FakeClient(key, handler),
@@ -206,7 +206,7 @@ def test_non_rate_limit_errors_retry_same_key(monkeypatch):
             raise RuntimeError("temporary")
         return analysis_json(parse_chunk_link(kwargs["contents"]))
 
-    monkeypatch.setattr("kufar_server_finder.gemini.time.sleep", sleeps.append)
+    monkeypatch.setattr("kufar_finder_core.gemini.time.sleep", sleeps.append)
     analyzer = GeminiAnalyzer(
         make_config(max_retries=2),
         client_factory=lambda key: FakeClient(key, handler),
@@ -227,7 +227,7 @@ def test_rate_limit_exhaustion_returns_empty_chunk(monkeypatch):
         calls.append(key)
         raise RateLimitError("429")
 
-    monkeypatch.setattr("kufar_server_finder.gemini.time.sleep", sleeps.append)
+    monkeypatch.setattr("kufar_finder_core.gemini.time.sleep", sleeps.append)
     analyzer = GeminiAnalyzer(
         make_config(max_retries=3),
         client_factory=lambda key: FakeClient(key, handler),
@@ -537,6 +537,3 @@ def test_executors_are_reused_and_context_manager_closes_analyzer():
             operation=lambda worker, task: task,
             fallback=lambda: 0,
         )
-
-
-

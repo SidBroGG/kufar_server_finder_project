@@ -3,15 +3,22 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
+from kufar_finder_core import (
+    GeminiConfig,
+    KufarClient,
+    KufarConfig,
+    load_items,
+    process_streaming,
+    save_items,
+)
+
 from .benchmark import CpuBenchmarkDataset
-from .config import GeminiConfig, KufarConfig
+from .constants import KUFAR_CATEGORIES
 from .excel_export import export_ads_json_to_excel
-from .kufar import KufarClient
 from .pipeline import AdPipeline
-from .storage import load_ads, save_ads
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pipeline.add_argument("--input", default="output_unfiltered.json")
     pipeline.add_argument("--output", default="output.json")
-    pipeline.add_argument(
-        "--excel-output",
-        default="output.xlsx",
-        help="Excel-файл, создаваемый из итогового JSON",
-    )
+    pipeline.add_argument("--excel-output", default="output.xlsx")
     _add_dataset_argument(pipeline)
 
     benchmark = subparsers.add_parser(
@@ -61,10 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--output", default="output_benchmark.json")
     _add_dataset_argument(benchmark, required=True)
 
-    excel = subparsers.add_parser(
-        "excel",
-        help="Экспортировать готовый JSON в Excel",
-    )
+    excel = subparsers.add_parser("excel", help="Экспортировать JSON в Excel")
     excel.add_argument("--input", default="output.json")
     excel.add_argument("--output", default="output.xlsx")
 
@@ -72,13 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_collect_arguments(run)
     run.add_argument("--raw-output", default="output_unfiltered.json")
     run.add_argument("--output", default="output.json")
-    run.add_argument(
-        "--excel-output",
-        default="output.xlsx",
-        help="Excel-файл, создаваемый из итогового JSON",
-    )
+    run.add_argument("--excel-output", default="output.xlsx")
     _add_dataset_argument(run)
-
     return parser
 
 
@@ -96,6 +91,7 @@ def _add_dataset_argument(
 
 
 def _add_collect_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--min-price", type=float, default=0.0)
     parser.add_argument("--max-price", type=float, default=100.0)
 
 
@@ -109,63 +105,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "collect":
             ads = _collect(args)
-            save_ads(args.output, ads)
+            save_items(args.output, ads)
             logger.info("Результат сохранён: %s", args.output)
             return 0
 
         if args.command == "analyze":
-            ads = load_ads(args.input)
+            ads = load_items(args.input)
             pipeline = _build_pipeline()
             try:
                 result = _analyze(ads, pipeline=pipeline)
-                result = _apply_benchmark(
-                    result,
-                    args.dataset,
-                    pipeline=pipeline,
-                )
+                result = _apply_benchmark(result, args.dataset, pipeline=pipeline)
             finally:
                 _close_pipeline(pipeline)
-            save_ads(args.output, result)
+            save_items(args.output, result)
             logger.info("Результат сохранён: %s", args.output)
             return 0
 
         if args.command == "vision":
-            ads = load_ads(args.input)
+            ads = load_items(args.input)
             pipeline = _build_pipeline()
             try:
                 result = _vision(ads, pipeline=pipeline)
             finally:
                 _close_pipeline(pipeline)
-            save_ads(args.output, result)
+            save_items(args.output, result)
             logger.info("Результат фото-анализа сохранён: %s", args.output)
             return 0
 
         if args.command == "pipeline":
-            ads = load_ads(args.input)
+            ads = load_items(args.input)
             pipeline = _build_pipeline()
             try:
                 result = _analyze(ads, pipeline=pipeline)
                 result = _vision(result, pipeline=pipeline)
-                result = _apply_benchmark(
-                    result,
-                    args.dataset,
-                    pipeline=pipeline,
-                )
+                result = _apply_benchmark(result, args.dataset, pipeline=pipeline)
             finally:
                 _close_pipeline(pipeline)
-            save_ads(args.output, result)
+            save_items(args.output, result)
             export_ads_json_to_excel(args.output, args.excel_output)
-            logger.info(
-                "Pipeline завершён: итог %s; Excel %s",
-                args.output,
-                args.excel_output,
-            )
+            logger.info("Pipeline завершён: %s", args.output)
             return 0
 
         if args.command == "benchmark":
-            ads = load_ads(args.input)
+            ads = load_items(args.input)
             result = _apply_benchmark(ads, args.dataset)
-            save_ads(args.output, result)
+            save_items(args.output, result)
             logger.info("JSON с benchmark сохранён: %s", args.output)
             return 0
 
@@ -186,90 +170,70 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception:
         logger.exception("Неожиданная ошибка")
         return 1
-
     return 1
 
 
-def _collect(args: argparse.Namespace) -> list[dict]:
-    client = KufarClient(KufarConfig.from_env())
+def _build_kufar_config() -> KufarConfig:
+    return KufarConfig.from_env(categories=KUFAR_CATEGORIES)
+
+
+def _collect(args: argparse.Namespace) -> list[dict[str, Any]]:
+    client = KufarClient(_build_kufar_config())
     try:
-        return client.fetch_ads(max_price=args.max_price)
+        return client.fetch_ads(
+            min_price=args.min_price,
+            max_price=args.max_price,
+        )
     finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+        client.close()
 
 
 def _build_pipeline(config: GeminiConfig | None = None) -> AdPipeline:
-    active_config = config or GeminiConfig.from_env()
     from .gemini import GeminiAnalyzer
 
-    return AdPipeline(GeminiAnalyzer(active_config))
+    return AdPipeline(GeminiAnalyzer(config or GeminiConfig.from_env()))
 
 
 def _run_streaming(args: argparse.Namespace) -> None:
-    pipeline: AdPipeline | None = None
-    client: KufarClient | None = None
-    executor: ThreadPoolExecutor | None = None
-    futures: list[Future[list[dict]]] = []
-    raw_ads: list[dict] = []
-    batch: list[dict] = []
-
+    gemini_config = GeminiConfig.from_env()
+    benchmark_dataset = (
+        CpuBenchmarkDataset.from_csv(args.dataset) if args.dataset else None
+    )
+    pipeline = _build_pipeline(gemini_config)
     try:
-        gemini_config = GeminiConfig.from_env()
-        benchmark_dataset = (
-            CpuBenchmarkDataset.from_csv(args.dataset) if args.dataset else None
+        processor = partial(
+            _process_run_batch,
+            pipeline=pipeline,
+            benchmark_dataset=benchmark_dataset,
         )
-        client = KufarClient(KufarConfig.from_env())
-        pipeline = _build_pipeline(gemini_config)
-        executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="run-pipeline",
-        )
-
-        for ad in client.iter_ads(max_price=args.max_price):
-            raw_ads.append(ad)
-            batch.append(ad)
-            if len(batch) >= gemini_config.chunk_size:
-                futures.append(
-                    executor.submit(
-                        _process_run_batch,
-                        batch,
-                        pipeline=pipeline,
-                        benchmark_dataset=benchmark_dataset,
-                    )
-                )
-                batch = []
-
-        if batch:
-            futures.append(
-                executor.submit(
-                    _process_run_batch,
-                    batch,
-                    pipeline=pipeline,
-                    benchmark_dataset=benchmark_dataset,
-                )
+        client = KufarClient(_build_kufar_config())
+        try:
+            streaming_result = process_streaming(
+                client.iter_ads(
+                    min_price=args.min_price,
+                    max_price=args.max_price,
+                ),
+                batch_size=gemini_config.chunk_size,
+                max_workers=1,
+                processor=processor,
             )
+        finally:
+            client.close()
 
-        raw_ads.sort(key=lambda ad: ad.get("price", float("inf")))
-        save_ads(args.raw_output, raw_ads)
-
-        result: list[dict] = []
-        for future in futures:
-            result.extend(future.result())
-        result.sort(key=lambda ad: ad.get("price", float("inf")))
+        raw_ads = sorted(
+            streaming_result.raw_items,
+            key=lambda ad: ad.get("price", float("inf")),
+        )
+        result = sorted(
+            streaming_result.processed_items,
+            key=lambda ad: ad.get("price", float("inf")),
+        )
+        save_items(args.raw_output, raw_ads)
+        save_items(args.output, result)
+        export_ads_json_to_excel(args.output, args.excel_output)
     finally:
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=False)
-        if client is not None:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
-        if pipeline is not None:
-            _close_pipeline(pipeline)
+        _close_pipeline(pipeline)
 
-    save_ads(args.output, result)
-    export_ads_json_to_excel(args.output, args.excel_output)
     logger.info(
         "Сырые данные: %s; итог: %s; Excel: %s",
         args.raw_output,
@@ -279,11 +243,11 @@ def _run_streaming(args: argparse.Namespace) -> None:
 
 
 def _process_run_batch(
-    ads: list[dict],
+    ads: list[dict[str, Any]],
     *,
     pipeline: AdPipeline,
     benchmark_dataset: CpuBenchmarkDataset | None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     logger.info("Запущена обработка пачки из %s объявлений", len(ads))
     result = _analyze(ads, pipeline=pipeline)
     result = _vision(result, pipeline=pipeline)
@@ -301,10 +265,10 @@ def _close_pipeline(pipeline: Any) -> None:
 
 
 def _analyze(
-    ads: list[dict],
+    ads: list[dict[str, Any]],
     *,
     pipeline: AdPipeline | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     owns_pipeline = pipeline is None
     active_pipeline = pipeline or _build_pipeline()
     try:
@@ -315,10 +279,10 @@ def _analyze(
 
 
 def _vision(
-    ads: list[dict],
+    ads: list[dict[str, Any]],
     *,
     pipeline: AdPipeline | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     owns_pipeline = pipeline is None
     active_pipeline = pipeline or _build_pipeline()
     try:
@@ -329,14 +293,13 @@ def _vision(
 
 
 def _apply_benchmark(
-    ads: list[dict],
+    ads: list[dict[str, Any]],
     dataset_path: str | None,
     *,
     pipeline: AdPipeline | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     if not dataset_path:
         return ads
-
     return _apply_benchmark_dataset(
         ads,
         CpuBenchmarkDataset.from_csv(dataset_path),
@@ -345,15 +308,14 @@ def _apply_benchmark(
 
 
 def _apply_benchmark_dataset(
-    ads: list[dict],
+    ads: list[dict[str, Any]],
     dataset: CpuBenchmarkDataset | None,
     *,
     pipeline: AdPipeline | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     if dataset is None:
         return ads
 
-    # Сначала дешёвый локальный поиск. В Gemini отправляются только несовпавшие CPU.
     initially_enriched = dataset.enrich_ads(ads)
     unmatched_indexes = [
         index
@@ -366,18 +328,10 @@ def _apply_benchmark_dataset(
         owns_pipeline = pipeline is None
         active_pipeline = pipeline or _build_pipeline()
         try:
-            normalized = active_pipeline.normalize_cpu_models_for_benchmark(
-                unmatched
-            )
+            normalized = active_pipeline.normalize_cpu_models_for_benchmark(unmatched)
         finally:
             if owns_pipeline:
                 _close_pipeline(active_pipeline)
-
-        normalized_count = sum(
-            1 for ad in normalized if ad.get("cpu_model_normalized") is True
-        )
-        if normalized_count:
-            logger.info("AI нормализовал названия CPU: %s", normalized_count)
 
         enriched_unmatched = dataset.enrich_ads(normalized)
         result = list(initially_enriched)
@@ -393,6 +347,3 @@ def _apply_benchmark_dataset(
     matched = sum(1 for ad in result if "cpu_mark" in ad)
     logger.info("Benchmark найден для %s из %s объявлений", matched, len(result))
     return result
-
-
-
